@@ -1,0 +1,9 @@
+namespace MyrientTree;
+
+table Node {
+  name: string;
+  size: long;
+  children: [Node];
+}
+
+root_type Node;
