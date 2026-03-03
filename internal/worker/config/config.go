@@ -11,30 +11,30 @@ import (
 
 // WorkerConfig is the persistent local configuration for a worker.
 type WorkerConfig struct {
-	ID          int     `json:"id"`
-	Key         string  `json:"key"`
-	ServerURL   string  `json:"server_url"`
-	Name        string  `json:"name"`
-	TreeFile    string  `json:"tree_file"`
-	DownloadDir string  `json:"download_dir"`
-	Aria2cPath  string  `json:"aria2c_path"`
-	Aria2Port   int     `json:"aria2_port"`
-	DiskMinGB   float64 `json:"disk_min_gb"`
+	Key         string   `json:"key"`
+	ServerURL   string   `json:"server_url"`
+	Name        string   `json:"name"`
+	TreeFile    string   `json:"tree_file"`
+	DownloadDir string   `json:"download_dir"`
+	Aria2cPath  string   `json:"aria2c_path"`
+	Aria2Port   int      `json:"aria2_port"`
+	Aria2Args   []string `json:"aria2_args"`
+	DiskMinGB   float64  `json:"disk_min_gb"`
 }
 
 // applyDefaults fills zero-value fields with sensible defaults.
 func (c *WorkerConfig) applyDefaults() {
 	if c.ServerURL == "" {
-		c.ServerURL = "http://localhost:8080"
+		c.ServerURL = "https://myrient.imlxy.net"
 	}
 	if c.TreeFile == "" {
-		c.TreeFile = "data/full_tree.fbd"
+		c.TreeFile = "full_tree.fbd"
 	}
 	if c.DownloadDir == "" {
 		c.DownloadDir = "downloads"
 	}
 	if c.Aria2cPath == "" {
-		c.Aria2cPath = "aria2c"
+		c.Aria2cPath = "./aria2c.exe"
 	}
 	if c.Aria2Port == 0 {
 		c.Aria2Port = 6800
@@ -97,7 +97,6 @@ func Register(dir, serverURL, name string) (*WorkerConfig, error) {
 	}
 
 	cfg := &WorkerConfig{
-		ID:        result.ID,
 		Key:       result.Key,
 		ServerURL: serverURL,
 		Name:      name,

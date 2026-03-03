@@ -51,16 +51,19 @@ func main() {
 		}
 		log.Fatalf("No config found. A default worker.json has been created in %s — please edit it and restart.", workDir)
 	}
-	if cfg.ID == 0 {
+	if cfg.Key == "" {
 		// Config exists but not yet registered.
 		log.Printf("Registering with server as %q...", cfg.Name)
 		cfg, err = config.Register(workDir, cfg.ServerURL, cfg.Name)
 		if err != nil {
 			log.Fatalf("Failed to register: %v", err)
 		}
-		log.Printf("Registered as worker %d", cfg.ID)
+		log.Println("Registered as worker", cfg.Name)
+		log.Println("===================")
+		log.Println("Worker Key:", cfg.Key)
+		log.Println("===================")
 	} else {
-		log.Printf("Loaded config: worker %d", cfg.ID)
+		log.Printf("Loaded config: worker %d", cfg.Name)
 	}
 
 	// 2. Load flatbuffer tree.
@@ -89,6 +92,7 @@ func main() {
 		RPCPort:     cfg.Aria2Port,
 		MaxConcur:   5,
 		SessionFile: sessionFile,
+		ExtraArgs:   cfg.Aria2Args,
 	}
 	aria2Client, err := aria2.NewClient(aria2Cfg)
 	if err != nil {

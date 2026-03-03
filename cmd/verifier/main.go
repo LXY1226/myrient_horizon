@@ -37,10 +37,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
-	if cfg == nil || cfg.ID == 0 {
+	if cfg == nil || cfg.Key == "" {
 		log.Fatalf("No registered worker.json found in %s — run the worker first to register, or create one manually.", workDir)
 	}
-	log.Printf("Loaded config: worker %d", cfg.ID)
+	log.Printf("Loaded config: worker %d", cfg.Name)
 
 	// 2. Determine scan directory: CLI arg or config's DownloadDir.
 	scanDir := cfg.DownloadDir
@@ -135,6 +135,10 @@ func main() {
 		if strings.HasSuffix(relPath, verify.DownloadingSuffix) {
 			return nil
 		}
+		// Skip files with .aria2 control files — they are still downloading.
+		if _, err := os.Stat(path + ".aria2"); err == nil {
+			return nil
+		}
 
 		dirPart, fileName := splitPath(relPath)
 		// Tree paths look like "/No-Intro/Nintendo/", so prepend "/" and append "/".
@@ -148,10 +152,11 @@ func main() {
 			return nil // directory not in tree
 		}
 
-		// Find matching file in the directory by name and size.
+		// Match file by relative path: check if file exists in tree at this exact path with correct size.
 		dir := &tree.Dirs[dirID]
 		for i := dir.FileStart; i < dir.FileEnd; i++ {
 			f := &tree.Files[i]
+			// Match by exact filename and size in the correct directory (relative path).
 			if f.Name == fileName && f.Size == fi.Size() {
 				localIdx := i - dir.FileStart
 				matchedCount.Add(1)

@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -38,6 +40,7 @@ type Config struct {
 	RPCPort     int
 	MaxConcur   int
 	SessionFile string
+	ExtraArgs   []string // additional command-line arguments
 }
 
 // NewClient creates and starts an aria2c subprocess.
@@ -67,25 +70,38 @@ func (c *Client) start(cfg Config) error {
 	if aria2cPath == "" {
 		aria2cPath = "aria2c"
 	}
+	downloadDir, err := filepath.Abs(cfg.DownloadDir)
+	if err != nil {
+		return err
+	}
 
 	args := []string{
 		"--enable-rpc",
 		fmt.Sprintf("--rpc-listen-port=%d", cfg.RPCPort),
-		"--rpc-listen-all=false",
-		fmt.Sprintf("--dir=%s", cfg.DownloadDir),
+		fmt.Sprintf("--dir=%s", downloadDir),
 		fmt.Sprintf("--max-concurrent-downloads=%d", cfg.MaxConcur),
+		"--rpc-listen-all=false",
 		"--auto-file-renaming=false",
 		"--allow-overwrite=false",
 		"--continue=true",
 	}
 	if cfg.SessionFile != "" {
+		f, err := os.OpenFile(cfg.SessionFile, os.O_RDONLY|os.O_CREATE, 0666)
+		if err != nil {
+			return err
+		}
+		f.Close()
 		args = append(args,
 			fmt.Sprintf("--save-session=%s", cfg.SessionFile),
 			fmt.Sprintf("--input-file=%s", cfg.SessionFile),
 		)
 	}
 
+	args = append(args, cfg.ExtraArgs...)
+	log.Printf("Starting aria2c...")
+	log.Println("aria2c", args)
 	c.cmd = exec.Command(aria2cPath, args...)
+	setPlatformAttrs(c.cmd)
 	if err := c.cmd.Start(); err != nil {
 		return fmt.Errorf("start aria2c: %w", err)
 	}
@@ -96,8 +112,15 @@ func (c *Client) start(cfg Config) error {
 func (c *Client) connect() error {
 	var err error
 	for i := 0; i < 20; i++ {
+		//if c.cmd != nil {
+		//	if c.cmd.ProcessState != nil && c.cmd.ProcessState.Exited() {
+		//		log.Printf("aria2c exited unexpectedly")
+		//		return nil
+		//	}
+		//}
 		c.conn, _, err = websocket.DefaultDialer.Dial(c.rpcURL, http.Header{})
 		if err == nil {
+			log.Println("Connected to aria2")
 			return nil
 		}
 		time.Sleep(500 * time.Millisecond)
