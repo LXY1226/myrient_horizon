@@ -18,17 +18,17 @@ import (
 )
 
 func main() {
-	addr := flag.String("addr", ":8080", "HTTP listen address")
+	addr := flag.String("addr", ":8099", "HTTP listen address")
 	dbURL := flag.String("db", "postgres://myrient:myrient_dev_password@localhost:5432/myrient?sslmode=disable", "PostgreSQL connection string")
-	treeFile := flag.String("tree", "data/full_tree.fbd", "Path to flatbuffer tree file")
+	dataDir := flag.String("data", "data", "Path to flatbuffer tree file")
 	flag.Parse()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	// 1. Load flatbuffer tree.
-	log.Printf("Loading tree from %s...", *treeFile)
-	baseTree, err := myrienttree.LoadFromFile(*treeFile)
+	log.Printf("Loading tree from %s...", *dataDir+"/full_tree.fbd")
+	baseTree, err := myrienttree.LoadFromFile(*dataDir + "/full_tree.fbd")
 	if err != nil {
 		log.Fatalf("Failed to load tree: %v", err)
 	}
@@ -58,11 +58,11 @@ func main() {
 	h := handler.New(store, serverTree, hub)
 
 	mux := http.NewServeMux()
-	h.Register(mux)
+	handlerWithCors := h.Register(mux)
 
 	server := &http.Server{
 		Addr:         *addr,
-		Handler:      mux,
+		Handler:      handlerWithCors,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 0, // SSE needs no write timeout.
 		IdleTimeout:  60 * time.Second,
@@ -71,7 +71,7 @@ func main() {
 	// 5. Start server.
 	go func() {
 		log.Printf("Server listening on %s", *addr)
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := server.ListenAndServeTLS(*dataDir+"/cert.pem", *dataDir+"/key.pem"); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Server error: %v", err)
 		}
 	}()

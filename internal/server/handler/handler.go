@@ -26,8 +26,25 @@ func New(store *db.Store, tree *stree.ServerTree, hub *wsrpc.Hub) *Handler {
 	return &Handler{store: store, tree: tree, hub: hub}
 }
 
-// Register sets up all HTTP routes on the given mux.
-func (h *Handler) Register(mux *http.ServeMux) {
+// corsMiddleware wraps an http.Handler and adds CORS headers to every response.
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.Header().Set("Access-Control-Max-Age", "86400")
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+// Register sets up all HTTP routes on the given mux and returns a CORS-enabled handler.
+func (h *Handler) Register(mux *http.ServeMux) http.Handler {
 	// Worker registration (public).
 	mux.HandleFunc("POST /api/register", h.handleRegister)
 
@@ -46,6 +63,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/stats/stream", h.handleSSEStream)
 	mux.HandleFunc("GET /api/stats/worker/{id}", h.handleWorkerStats)
 	mux.HandleFunc("GET /api/stats/dir", h.handleDirDetail)
+
+	return corsMiddleware(mux)
 }
 
 // ---- Auth Middleware ----
@@ -275,7 +294,6 @@ func (h *Handler) handleSSEStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
@@ -298,6 +316,7 @@ func (h *Handler) sendSSEDirStats(w http.ResponseWriter, flusher http.Flusher, d
 	data := map[string]any{
 		"type":     "dir_stats",
 		"path":     path,
+		"dir_id":   dirID,
 		"stats":    h.tree.GetDirStats(dirID),
 		"children": children,
 	}
@@ -386,9 +405,10 @@ func (h *Handler) handleDirDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"path":  path,
-		"stats": h.tree.GetDirStats(dirID),
-		"files": files,
+		"dir_id": dirID,
+		"path":   path,
+		"stats":  h.tree.GetDirStats(dirID),
+		"files":  files,
 	})
 }
 

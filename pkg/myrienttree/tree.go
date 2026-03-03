@@ -84,7 +84,10 @@ func bytesToString(b []byte) string {
 // buildDFS recursively traverses the flatbuffer tree in DFS order.
 func (t *Tree) buildDFS(fbNode *fb.Node, parentIdx int32, parentPath string) {
 	name := bytesToString(fbNode.Name())
-	path := parentPath + name + "/"
+	path := parentPath + name
+	if name != "/" {
+		path += "/"
+	}
 
 	dirIdx := int32(len(t.Dirs))
 	t.Dirs = append(t.Dirs, DirNode{
