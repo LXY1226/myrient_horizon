@@ -11,21 +11,26 @@ import (
 
 // WorkerConfig is the persistent local configuration for a worker.
 type WorkerConfig struct {
-	Key         string   `json:"key"`
-	ServerURL   string   `json:"server_url"`
-	Name        string   `json:"name"`
-	TreeFile    string   `json:"tree_file"`
-	DownloadDir string   `json:"download_dir"`
-	Aria2cPath  string   `json:"aria2c_path"`
-	Aria2Port   int      `json:"aria2_port"`
-	Aria2Args   []string `json:"aria2_args"`
-	DiskMinGB   float64  `json:"disk_min_gb"`
+	Key           string   `json:"key"`
+	ServerURL     string   `json:"server_url"`
+	Name          string   `json:"name"`
+	TreeFile      string   `json:"tree_file"`
+	DownloadDir   string   `json:"download_dir"`
+	Aria2cPath    string   `json:"aria2c_path"`
+	Aria2Port     int      `json:"aria2_port"`
+	Aria2Conf     string   `json:"aria2_conf"`
+	Aria2Args     []string `json:"aria2_args"`
+	Aria2RPCURL   string   `json:"aria2_rpc_url"` // non-empty = external aria2 mode
+	DiskMinGB     float64  `json:"disk_min_gb"`
+	HeartBeatIntv int      `json:"heart_beat_interval"`
 }
+
+var Global WorkerConfig
 
 // applyDefaults fills zero-value fields with sensible defaults.
 func (c *WorkerConfig) applyDefaults() {
 	if c.ServerURL == "" {
-		c.ServerURL = "https://myrient.imlxy.net"
+		c.ServerURL = "https://myrient.imlxy.net/api"
 	}
 	if c.TreeFile == "" {
 		c.TreeFile = "full_tree.fbd"
@@ -38,6 +43,9 @@ func (c *WorkerConfig) applyDefaults() {
 	}
 	if c.Aria2Port == 0 {
 		c.Aria2Port = 6800
+	}
+	if c.Aria2Conf == "" {
+		c.Aria2Conf = "aria2.conf"
 	}
 	if c.DiskMinGB == 0 {
 		c.DiskMinGB = 10.0
@@ -79,7 +87,7 @@ func Save(dir string, cfg *WorkerConfig) error {
 // Register calls the server's registration API and saves the config locally.
 func Register(dir, serverURL, name string) (*WorkerConfig, error) {
 	body, _ := json.Marshal(map[string]string{"name": name})
-	resp, err := http.Post(serverURL+"/api/register", "application/json", bytes.NewReader(body))
+	resp, err := http.Post(serverURL+"/register", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("register request: %w", err)
 	}

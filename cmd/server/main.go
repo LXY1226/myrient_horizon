@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"log"
+	stree "myrient-horizon/internal/server"
 	"net/http"
 	"os"
 	"os/signal"
@@ -12,7 +13,6 @@ import (
 
 	"myrient-horizon/internal/server/db"
 	"myrient-horizon/internal/server/handler"
-	stree "myrient-horizon/internal/server/tree"
 	"myrient-horizon/internal/server/wsrpc"
 	"myrient-horizon/pkg/myrienttree"
 )
@@ -20,7 +20,10 @@ import (
 func main() {
 	addr := flag.String("addr", ":8099", "HTTP listen address")
 	dbURL := flag.String("db", "postgres://myrient:myrient_dev_password@localhost:5432/myrient?sslmode=disable", "PostgreSQL connection string")
-	dataDir := flag.String("data", "data", "Path to flatbuffer tree file")
+	dataDir := flag.String("data", "data", "data directory")
+	workerVersion := flag.String("worker-version", "", "expected worker version (empty = skip check)")
+	workerURL := flag.String("worker-url", "", "download URL for the latest worker binary")
+	workerSHA256 := flag.String("worker-sha256", "", "SHA-256 hex digest of the latest worker binary")
 	flag.Parse()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -28,7 +31,7 @@ func main() {
 
 	// 1. Load flatbuffer tree.
 	log.Printf("Loading tree from %s...", *dataDir+"/full_tree.fbd")
-	baseTree, err := myrienttree.LoadFromFile(*dataDir + "/full_tree.fbd")
+	baseTree, err := myrienttree.LoadFromFile[stree.DirExt, stree.FileExt](*dataDir + "/full_tree.fbd")
 	if err != nil {
 		log.Fatalf("Failed to load tree: %v", err)
 	}
@@ -43,18 +46,23 @@ func main() {
 	defer store.Close()
 	log.Printf("Database connected, schema migrated")
 
-	// 3. Build server tree and recover state from DB.
+	// 3. Build server tree.
 	serverTree := stree.New(baseTree)
-	log.Printf("Recovering state from database...")
-	if err := serverTree.RecoverFromDB(ctx, store); err != nil {
-		log.Fatalf("Failed to recover state: %v", err)
-	}
+	// Note: With the new design, workers request their own status on connect.
+	// No need to recover state or load claims here.
+
 	rootStats := serverTree.GetDirStats(0)
-	log.Printf("State recovered: %d total, %d verified, %d downloaded, %d failed, %d conflicts",
-		rootStats.Total, rootStats.Verified, rootStats.Downloaded, rootStats.Failed, rootStats.Conflict)
+	log.Printf("State initialized: %d total, %d downloaded, %d verified, %d archived, %d failed, %d conflicts",
+		rootStats.Total, rootStats.Downloaded, rootStats.Verified, rootStats.Archived, rootStats.Failed, rootStats.Conflict)
 
 	// 4. Set up WebSocket hub and HTTP handlers.
 	hub := wsrpc.NewHub(store, serverTree)
+	hub.WorkerVersion = *workerVersion
+	hub.WorkerDownloadURL = *workerURL
+	hub.WorkerSHA256 = *workerSHA256
+	if *workerVersion != "" {
+		log.Printf("Worker version check enabled: expecting %s", *workerVersion)
+	}
 	h := handler.New(store, serverTree, hub)
 
 	mux := http.NewServeMux()

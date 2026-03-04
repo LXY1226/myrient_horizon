@@ -5,19 +5,19 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"log"
+	stree "myrient-horizon/internal/server"
 	"net/http"
 	"sync"
 	"time"
 
 	"myrient-horizon/internal/server/db"
-	stree "myrient-horizon/internal/server/tree"
 	"myrient-horizon/pkg/protocol"
 
 	"github.com/gorilla/websocket"
 )
 
 var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true }, // Allow cross-origin for dev.
+	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
 // WorkerConn represents an active WebSocket connection from a worker.
@@ -26,7 +26,7 @@ type WorkerConn struct {
 	Conn     *websocket.Conn
 	cancel   context.CancelFunc
 
-	wmu       sync.Mutex // protects writes to Conn
+	wmu       sync.Mutex
 	mu        sync.Mutex
 	Heartbeat *protocol.HeartbeatMsg
 	LastSeen  time.Time
@@ -53,10 +53,14 @@ func (wc *WorkerConn) Send(_ context.Context, msg any) error {
 // Hub manages all worker WebSocket connections.
 type Hub struct {
 	mu    sync.RWMutex
-	conns map[int]*WorkerConn // workerID → active connection
+	conns map[int]*WorkerConn
 
 	store *db.Store
 	tree  *stree.ServerTree
+
+	WorkerVersion     string
+	WorkerDownloadURL string
+	WorkerSHA256      string
 }
 
 // NewHub creates a new WebSocket hub.
@@ -88,7 +92,12 @@ func (h *Hub) AllConns() map[int]*WorkerConn {
 
 // HandleWS is the HTTP handler for WebSocket upgrade at /ws.
 func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
-	key := r.URL.Query().Get("key")
+	key := ""
+	if auth := r.Header.Get("Authorization"); len(auth) > 7 && auth[:7] == "Bearer " {
+		key = auth[7:]
+	} else {
+		key = r.URL.Query().Get("key")
+	}
 	if key == "" {
 		http.Error(w, "missing key", http.StatusUnauthorized)
 		return
@@ -98,6 +107,24 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 	if err != nil || workerID == 0 {
 		http.Error(w, "invalid key", http.StatusUnauthorized)
 		return
+	}
+
+	if h.WorkerVersion != "" {
+		clientVersion := r.Header.Get("X-Worker-Version")
+		if clientVersion != "verifier" && clientVersion != h.WorkerVersion {
+			log.Printf("ws: worker %d version mismatch: got %q, want %q", workerID, clientVersion, h.WorkerVersion)
+			resp := protocol.UpdateRequiredResponse{
+				Error:          "update_required",
+				CurrentVersion: clientVersion,
+				LatestVersion:  h.WorkerVersion,
+				DownloadURL:    h.WorkerDownloadURL,
+				SHA256:         h.WorkerSHA256,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUpgradeRequired)
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
 	}
 
 	conn, err := upgrader.Upgrade(w, r, nil)
@@ -114,7 +141,6 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		LastSeen: time.Now(),
 	}
 
-	// Disconnect any existing connection for this worker.
 	h.mu.Lock()
 	if old, ok := h.conns[workerID]; ok {
 		old.cancel()
@@ -128,13 +154,10 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("ws: worker %d connected", workerID)
 
-	// Send current task assignments on connect.
-	go h.sendInitialTasks(ctx, wc)
+	go h.sendInitialReclaims(ctx, wc)
 
-	// Read loop.
 	h.readLoop(ctx, wc)
 
-	// Cleanup on disconnect.
 	h.mu.Lock()
 	if h.conns[workerID] == wc {
 		delete(h.conns, workerID)
@@ -147,23 +170,31 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 	log.Printf("ws: worker %d disconnected", workerID)
 }
 
-func (h *Hub) sendInitialTasks(ctx context.Context, wc *WorkerConn) {
-	claims, err := h.store.ActiveClaimsForWorker(ctx, wc.WorkerID)
+func (h *Hub) sendInitialReclaims(ctx context.Context, wc *WorkerConn) {
+	reclaims, err := h.store.GetReclaimsByWorker(ctx, wc.WorkerID)
 	if err != nil {
-		log.Printf("ws: failed to load claims for worker %d: %v", wc.WorkerID, err)
+		log.Printf("ws: failed to load reclaims for worker %d: %v", wc.WorkerID, err)
 		return
 	}
-	if len(claims) == 0 {
+	if len(reclaims) == 0 {
 		return
 	}
-	dirIDs := make([]int32, len(claims))
-	for i, c := range claims {
-		dirIDs[i] = int32(c.DirID)
-	}
-	msg := protocol.TaskAssignMsg{Type: "task_assign", DirIDs: dirIDs}
-	if err := wc.Send(ctx, msg); err != nil {
-		log.Printf("ws: failed to send initial tasks to worker %d: %v", wc.WorkerID, err)
-	}
+
+	//reclaimList := make([]protocol.Reclaim, len(reclaims))
+	//for i, r := range reclaims {
+	//	reclaimList[i] = protocol.Reclaim{
+	//		DirID:   int32(r.DirID),
+	//		IsBlack: r.IsBlack,
+	//	}
+	//}
+	//
+	//msg := protocol.ReclaimsSyncMsg{
+	//	Type:     "reclaims_sync",
+	//	Reclaims: reclaimList,
+	//}
+	//if err := wc.Send(ctx, msg); err != nil {
+	//	log.Printf("ws: failed to send reclaims sync to worker %d: %v", wc.WorkerID, err)
+	//}
 }
 
 func (h *Hub) readLoop(ctx context.Context, wc *WorkerConn) {
@@ -187,6 +218,8 @@ func (h *Hub) readLoop(ctx context.Context, wc *WorkerConn) {
 			h.handleFileReport(ctx, wc, data)
 		case "heartbeat":
 			h.handleHeartbeat(wc, data)
+		case "status_sync_request":
+			h.handleStatusSyncRequest(ctx, wc)
 		default:
 			log.Printf("ws: unknown message type %q from worker %d", env.Type, wc.WorkerID)
 		}
@@ -194,15 +227,13 @@ func (h *Hub) readLoop(ctx context.Context, wc *WorkerConn) {
 }
 
 func (h *Hub) handleFileReport(ctx context.Context, wc *WorkerConn, data []byte) {
-	var msg protocol.FileReportMsg
+	var msg protocol.WorkerReportMsg
 	if err := json.Unmarshal(data, &msg); err != nil {
 		log.Printf("ws: bad file_report from worker %d: %v", wc.WorkerID, err)
 		return
 	}
 
-	// Batch upsert to DB.
-	records := make([]db.FileStatus, len(msg.Reports))
-	for i, r := range msg.Reports {
+	for _, r := range msg.Reports {
 		var sha1, crc32 []byte
 		if r.SHA1 != "" {
 			sha1, _ = hex.DecodeString(r.SHA1)
@@ -210,27 +241,19 @@ func (h *Hub) handleFileReport(ctx context.Context, wc *WorkerConn, data []byte)
 		if r.CRC32 != "" {
 			crc32, _ = hex.DecodeString(r.CRC32)
 		}
-		records[i] = db.FileStatus{
-			DirID:    r.DirID,
-			FileIdx:  r.FileIdx,
+
+		item := db.ItemStatus{
 			WorkerID: wc.WorkerID,
+			FileID:   r.FileID,
 			Status:   int16(r.Status),
 			SHA1:     sha1,
 			CRC32:    crc32,
 		}
-	}
-
-	if err := h.store.UpsertFileStatusBatch(ctx, records); err != nil {
-		log.Printf("ws: db upsert error for worker %d: %v", wc.WorkerID, err)
-	}
-
-	// Update in-memory tree.
-	for _, r := range msg.Reports {
-		var sha1 []byte
-		if r.SHA1 != "" {
-			sha1, _ = hex.DecodeString(r.SHA1)
+		if err := h.store.UpsertItemStatus(ctx, &item); err != nil {
+			log.Printf("ws: db upsert error for worker %d: %v", wc.WorkerID, err)
 		}
-		h.tree.ApplyReport(r.DirID, r.FileIdx, wc.WorkerID, r.Status, sha1)
+
+		h.tree.ApplyReport(r.FileID, wc.WorkerID, r.Status, sha1)
 	}
 }
 
@@ -245,11 +268,44 @@ func (h *Hub) handleHeartbeat(wc *WorkerConn, data []byte) {
 	wc.mu.Unlock()
 }
 
+func (h *Hub) handleStatusSyncRequest(ctx context.Context, wc *WorkerConn) {
+	var records []protocol.ItemStatus
+	err := h.store.ScanAllItemStatusByWorker(ctx, wc.WorkerID, func(item *db.ItemStatus) error {
+		var sha1, crc32 string
+		if item.SHA1 != nil {
+			sha1 = hex.EncodeToString(item.SHA1)
+		}
+		if item.CRC32 != nil {
+			crc32 = hex.EncodeToString(item.CRC32)
+		}
+		records = append(records, protocol.ItemStatus{
+			FileID: item.FileID,
+			Status: uint8(item.Status),
+			SHA1:   sha1,
+			CRC32:  crc32,
+		})
+		return nil
+	})
+
+	if err != nil {
+		log.Printf("ws: failed to scan item status for worker %d: %v", wc.WorkerID, err)
+		return
+	}
+
+	resp := protocol.StatusSyncResponse{
+		Type:    "status_sync_response",
+		Records: records,
+	}
+	if err := wc.Send(ctx, resp); err != nil {
+		log.Printf("ws: failed to send status sync response to worker %d: %v", wc.WorkerID, err)
+	}
+}
+
 // SendToWorker sends a message to a specific worker.
 func (h *Hub) SendToWorker(ctx context.Context, workerID int, msg any) error {
 	wc := h.GetConn(workerID)
 	if wc == nil {
-		return nil // Worker not connected, silently ignore.
+		return nil
 	}
 	return wc.Send(ctx, msg)
 }

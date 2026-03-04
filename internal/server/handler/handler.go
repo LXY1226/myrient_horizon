@@ -4,12 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
+	stree "myrient-horizon/internal/server"
 	"net/http"
 	"strconv"
 	"time"
 
 	"myrient-horizon/internal/server/db"
-	stree "myrient-horizon/internal/server/tree"
 	"myrient-horizon/internal/server/wsrpc"
 	"myrient-horizon/pkg/protocol"
 )
@@ -29,17 +30,25 @@ func New(store *db.Store, tree *stree.ServerTree, hub *wsrpc.Hub) *Handler {
 // corsMiddleware wraps an http.Handler and adds CORS headers to every response.
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		w.Header().Set("Access-Control-Max-Age", "86400")
+		//w.Header().Set("Access-Control-Allow-Origin", "*")
+		//w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+		//w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		//w.Header().Set("Access-Control-Max-Age", "7200")
 
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
+		//if r.Method == http.MethodOptions {
+		//	w.WriteHeader(http.StatusNoContent)
+		//	return
+		//}
+
+		//start := time.Now()
+		log.Printf("%s %s %s %s", time.Now().Format("15:04:05"),
+			r.Header.Get("ali-real-client-ip"),
+			r.Method, r.RequestURI)
 
 		next.ServeHTTP(w, r)
+
+		//latency := time.Since(start)
+		//log.Printf("[HTTP] Completed in %v", latency)
 	})
 }
 
@@ -49,17 +58,18 @@ func (h *Handler) Register(mux *http.ServeMux) http.Handler {
 	mux.HandleFunc("POST /api/register", h.handleRegister)
 
 	// WebSocket RPC.
-	mux.HandleFunc("/ws", h.hub.HandleWS)
+	mux.HandleFunc("/api/ws", h.hub.HandleWS)
 
 	// Management API (key-authenticated).
-	mux.HandleFunc("POST /api/manage/claim", h.authMiddleware(h.handleClaim))
-	mux.HandleFunc("DELETE /api/manage/claim", h.authMiddleware(h.handleRelease))
+	// Note: Claim/Release are deprecated in the new design (workers request status on connect)
 	mux.HandleFunc("PATCH /api/manage/worker/{id}/config", h.authMiddleware(h.handleUpdateConfig))
 	mux.HandleFunc("GET /api/manage/workers", h.authMiddleware(h.handleListWorkers))
+	// Conflicts endpoint - stubbed for now
 	mux.HandleFunc("GET /api/manage/conflicts", h.authMiddleware(h.handleConflicts))
 
 	// Statistics API (public).
 	mux.HandleFunc("GET /api/stats/overview", h.handleOverview)
+	mux.HandleFunc("GET /api/stats/tree", h.handleTree)
 	mux.HandleFunc("GET /api/stats/stream", h.handleSSEStream)
 	mux.HandleFunc("GET /api/stats/worker/{id}", h.handleWorkerStats)
 	mux.HandleFunc("GET /api/stats/dir", h.handleDirDetail)
@@ -111,59 +121,6 @@ func (h *Handler) handleRegister(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---- Management API ----
-
-func (h *Handler) handleClaim(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		WorkerID int    `json:"worker_id"`
-		DirPath  string `json:"dir_path"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
-	dirID, ok := h.tree.Base().DirByPath(req.DirPath)
-	if !ok {
-		http.Error(w, "directory not found", http.StatusNotFound)
-		return
-	}
-	claimID, err := h.store.ClaimDir(r.Context(), req.WorkerID, dirID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	// Push task_assign to the worker via WebSocket.
-	msg := protocol.TaskAssignMsg{Type: "task_assign", DirIDs: []int32{dirID}}
-	_ = h.hub.SendToWorker(r.Context(), req.WorkerID, msg)
-
-	writeJSON(w, http.StatusOK, map[string]any{"claim_id": claimID, "dir_id": dirID})
-}
-
-func (h *Handler) handleRelease(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		WorkerID int    `json:"worker_id"`
-		DirPath  string `json:"dir_path"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
-	dirID, ok := h.tree.Base().DirByPath(req.DirPath)
-	if !ok {
-		http.Error(w, "directory not found", http.StatusNotFound)
-		return
-	}
-	if err := h.store.ReleaseDir(r.Context(), req.WorkerID, dirID); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	// Push task_revoke.
-	msg := protocol.TaskRevokeMsg{Type: "task_revoke", DirIDs: []int32{dirID}}
-	_ = h.hub.SendToWorker(r.Context(), req.WorkerID, msg)
-
-	writeJSON(w, http.StatusOK, map[string]string{"status": "released"})
-}
 
 func (h *Handler) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	idStr := r.PathValue("id")
@@ -219,59 +176,38 @@ func (h *Handler) handleListWorkers(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleConflicts(w http.ResponseWriter, r *http.Request) {
-	dirIDStr := r.URL.Query().Get("dir_id")
-	dirID, err := strconv.Atoi(dirIDStr)
-	if err != nil {
-		http.Error(w, "invalid dir_id", http.StatusBadRequest)
-		return
-	}
-	idxs, err := h.store.ConflictFiles(r.Context(), int32(dirID))
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	// For each conflicting file, get details.
-	type conflictInfo struct {
-		FileIdx  int32           `json:"file_idx"`
-		FileName string          `json:"file_name"`
-		Reports  []db.FileStatus `json:"reports"`
-	}
-
-	var conflicts []conflictInfo
-	for _, idx := range idxs {
-		gIdx := h.tree.Base().FileGlobalIndex(int32(dirID), idx)
-		name := h.tree.Base().Files[gIdx].Name
-		reports, _ := h.store.FileStatusByDir(r.Context(), int32(dirID))
-		// Filter to this file.
-		var fileReports []db.FileStatus
-		for _, rpt := range reports {
-			if rpt.FileIdx == idx {
-				fileReports = append(fileReports, rpt)
-			}
-		}
-		conflicts = append(conflicts, conflictInfo{
-			FileIdx:  idx,
-			FileName: name,
-			Reports:  fileReports,
-		})
-	}
-	writeJSON(w, http.StatusOK, conflicts)
+	// Stub: Conflicts are tracked in-memory by ServerTree now, not in DB
+	// TODO: Implement conflict query based on HasConflict flag in tree
+	writeJSON(w, http.StatusOK, []any{})
 }
 
 // ---- Statistics API ----
 
 func (h *Handler) handleOverview(w http.ResponseWriter, r *http.Request) {
 	stats := h.tree.GetDirStats(0) // Root dir = entire tree.
-	writeJSON(w, http.StatusOK, map[string]any{
-		"total_files": stats.Total,
-		"downloading": stats.Downloading,
-		"downloaded":  stats.Downloaded,
-		"verifying":   stats.Verifying,
-		"verified":    stats.Verified,
-		"failed":      stats.Failed,
-		"conflicts":   stats.Conflict,
-	})
+	writeJSON(w, http.StatusOK, stree.StatsToOverview(stats))
+}
+
+func (h *Handler) handleTree(w http.ResponseWriter, r *http.Request) {
+	depth := 1
+	if d := r.URL.Query().Get("depth"); d != "" {
+		if v, err := strconv.Atoi(d); err == nil && v > 0 && v <= 5 {
+			depth = v
+		}
+	}
+
+	dirID := int32(0)
+	if p := r.URL.Query().Get("path"); p != "" {
+		id, ok := h.tree.Base().DirByPath(p)
+		if !ok {
+			http.Error(w, "directory not found", http.StatusNotFound)
+			return
+		}
+		dirID = id
+	}
+
+	nodes := h.tree.BuildTreeNodes(dirID, depth)
+	writeJSON(w, http.StatusOK, map[string]any{"directories": nodes})
 }
 
 func (h *Handler) handleSSEStream(w http.ResponseWriter, r *http.Request) {
@@ -339,11 +275,10 @@ func (h *Handler) handleWorkerStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	claims, _ := h.store.ActiveClaimsForWorker(r.Context(), workerID)
-
+	// Note: Claims are deprecated in the new design
 	result := map[string]any{
 		"worker": worker,
-		"claims": claims,
+		"claims": []any{},
 		"online": false,
 	}
 
@@ -369,37 +304,27 @@ func (h *Handler) handleDirDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	records, err := h.store.FileStatusByDir(r.Context(), dirID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	// Build file list with status.
+	// Build file list with status from in-memory tree (no DB query needed in new design)
 	dir := &h.tree.Base().Dirs[dirID]
 	type fileInfo struct {
-		Idx     int32           `json:"idx"`
-		Name    string          `json:"name"`
-		Size    int64           `json:"size"`
-		Status  uint8           `json:"best_status"`
-		Reports []db.FileStatus `json:"reports,omitempty"`
+		Idx      int32  `json:"idx"`
+		Name     string `json:"name"`
+		Size     int64  `json:"size"`
+		Status   uint8  `json:"best_status"`
+		Conflict bool   `json:"has_conflict"`
 	}
 
 	files := make([]fileInfo, 0, dir.FileEnd-dir.FileStart)
-	reportsByIdx := make(map[int32][]db.FileStatus)
-	for _, r := range records {
-		reportsByIdx[r.FileIdx] = append(reportsByIdx[r.FileIdx], r)
-	}
 
 	for i := dir.FileStart; i < dir.FileEnd; i++ {
 		f := &h.tree.Base().Files[i]
 		localIdx := i - dir.FileStart
 		fi := fileInfo{
-			Idx:     localIdx,
-			Name:    f.Name,
-			Size:    f.Size,
-			Status:  f.BestStatus,
-			Reports: reportsByIdx[localIdx],
+			Idx:      localIdx,
+			Name:     f.Name,
+			Size:     f.Size,
+			Status:   f.Ext.BestStatus,
+			Conflict: f.Ext.HasConflict,
 		}
 		files = append(files, fi)
 	}

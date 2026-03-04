@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -21,27 +20,41 @@ CREATE TABLE IF NOT EXISTS workers (
     created_at  TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE TABLE IF NOT EXISTS claims (
-    id          SERIAL PRIMARY KEY,
-    dir_id      INT NOT NULL,
+CREATE TABLE IF NOT EXISTS item_status (
     worker_id   INT NOT NULL REFERENCES workers(id),
-    claimed_at  TIMESTAMPTZ DEFAULT now(),
-    released_at TIMESTAMPTZ
-);
-CREATE INDEX IF NOT EXISTS idx_claims_worker ON claims(worker_id);
-CREATE INDEX IF NOT EXISTS idx_claims_dir ON claims(dir_id);
-
-CREATE TABLE IF NOT EXISTS file_status (
-    dir_id      INT NOT NULL,
-    file_idx    INT NOT NULL,
-    worker_id   INT NOT NULL REFERENCES workers(id),
+    file_id     BIGINT NOT NULL,
     status      SMALLINT NOT NULL,
     sha1        BYTEA,
     crc32       BYTEA,
     updated_at  TIMESTAMPTZ DEFAULT now(),
-    PRIMARY KEY (dir_id, file_idx, worker_id)
+    PRIMARY KEY (worker_id, file_id)
 );
-CREATE INDEX IF NOT EXISTS idx_fstatus_dir ON file_status(dir_id);
+CREATE INDEX IF NOT EXISTS idx_item_status_worker ON item_status(worker_id);
+CREATE INDEX IF NOT EXISTS idx_item_status_file ON item_status(file_id);
+
+CREATE TABLE IF NOT EXISTS reclaims (
+    id          SERIAL PRIMARY KEY,
+    worker_id   INT NOT NULL REFERENCES workers(id),
+    dir_id      INT NOT NULL,
+    is_black    BOOLEAN NOT NULL DEFAULT false,
+    created_at  TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_reclaims_worker ON reclaims(worker_id);
+
+CREATE TABLE IF NOT EXISTS archive_status (
+    id          SERIAL PRIMARY KEY,
+    worker_id   INT NOT NULL REFERENCES workers(id),
+    file_id     BIGINT NOT NULL,
+    archive_id  INT NOT NULL,
+    created_at  TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_archive_status_worker ON archive_status(worker_id);
+
+CREATE TABLE IF NOT EXISTS archived (
+    id          SERIAL PRIMARY KEY,
+    raw_json    JSONB NOT NULL,
+    created_at  TIMESTAMPTZ DEFAULT now()
+);
 `
 
 // Store wraps the PostgreSQL connection pool and provides data access methods.
@@ -82,7 +95,6 @@ type Worker struct {
 
 // RegisterWorker creates a new worker, returning the ID and plaintext key.
 func (s *Store) RegisterWorker(ctx context.Context, name string) (id int, key string, err error) {
-	// Generate a random key: mh_ + 32 hex chars.
 	raw := make([]byte, 16)
 	if _, err = rand.Read(raw); err != nil {
 		return 0, "", fmt.Errorf("generate key: %w", err)
@@ -163,160 +175,150 @@ func (s *Store) UpdateWorkerConfig(ctx context.Context, workerID int, config []b
 	return err
 }
 
-// ---- Claims ----
+// ---- Item Status ----
 
-type Claim struct {
-	ID         int        `json:"id"`
-	DirID      int        `json:"dir_id"`
-	WorkerID   int        `json:"worker_id"`
-	ClaimedAt  time.Time  `json:"claimed_at"`
-	ReleasedAt *time.Time `json:"released_at,omitempty"`
+type ItemStatus struct {
+	WorkerID int
+	FileID   int64
+	Status   int16
+	SHA1     []byte
+	CRC32    []byte
 }
 
-// ClaimDir records a directory claim for a worker.
-func (s *Store) ClaimDir(ctx context.Context, workerID int, dirID int32) (int, error) {
-	var id int
-	err := s.pool.QueryRow(ctx,
-		`INSERT INTO claims (dir_id, worker_id) VALUES ($1, $2) RETURNING id`,
-		dirID, workerID,
-	).Scan(&id)
-	return id, err
-}
-
-// ReleaseDir marks a claim as released.
-func (s *Store) ReleaseDir(ctx context.Context, workerID int, dirID int32) error {
+// UpsertItemStatus inserts or updates an item status record.
+func (s *Store) UpsertItemStatus(ctx context.Context, item *ItemStatus) error {
 	_, err := s.pool.Exec(ctx,
-		`UPDATE claims SET released_at = now()
-		 WHERE worker_id = $1 AND dir_id = $2 AND released_at IS NULL`,
-		workerID, dirID)
-	return err
-}
-
-// ActiveClaimsForWorker returns all unreleased claims for a worker.
-func (s *Store) ActiveClaimsForWorker(ctx context.Context, workerID int) ([]Claim, error) {
-	rows, err := s.pool.Query(ctx,
-		`SELECT id, dir_id, worker_id, claimed_at FROM claims
-		 WHERE worker_id = $1 AND released_at IS NULL ORDER BY dir_id`,
-		workerID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var claims []Claim
-	for rows.Next() {
-		var c Claim
-		if err := rows.Scan(&c.ID, &c.DirID, &c.WorkerID, &c.ClaimedAt); err != nil {
-			return nil, err
-		}
-		claims = append(claims, c)
-	}
-	return claims, nil
-}
-
-// ---- File Status ----
-
-type FileStatus struct {
-	DirID    int32  `json:"dir_id"`
-	FileIdx  int32  `json:"file_idx"`
-	WorkerID int    `json:"worker_id"`
-	Status   int16  `json:"status"`
-	SHA1     []byte `json:"sha1,omitempty"`
-	CRC32    []byte `json:"crc32,omitempty"`
-}
-
-// UpsertFileStatus inserts or updates a file status record.
-func (s *Store) UpsertFileStatus(ctx context.Context, fs *FileStatus) error {
-	_, err := s.pool.Exec(ctx,
-		`INSERT INTO file_status (dir_id, file_idx, worker_id, status, sha1, crc32)
-		 VALUES ($1, $2, $3, $4, $5, $6)
-		 ON CONFLICT (dir_id, file_idx, worker_id)
+		`INSERT INTO item_status (worker_id, file_id, status, sha1, crc32)
+		 VALUES ($1, $2, $3, $4, $5)
+		 ON CONFLICT (worker_id, file_id)
 		 DO UPDATE SET status=EXCLUDED.status, sha1=EXCLUDED.sha1, crc32=EXCLUDED.crc32, updated_at=now()`,
-		fs.DirID, fs.FileIdx, fs.WorkerID, fs.Status, fs.SHA1, fs.CRC32)
+		item.WorkerID, item.FileID, item.Status, item.SHA1, item.CRC32)
 	return err
 }
 
-// UpsertFileStatusBatch performs a batch upsert of file status records.
-func (s *Store) UpsertFileStatusBatch(ctx context.Context, records []FileStatus) error {
-	batch := &pgx.Batch{}
-	for i := range records {
-		r := &records[i]
-		batch.Queue(
-			`INSERT INTO file_status (dir_id, file_idx, worker_id, status, sha1, crc32)
-			 VALUES ($1, $2, $3, $4, $5, $6)
-			 ON CONFLICT (dir_id, file_idx, worker_id)
-			 DO UPDATE SET status=EXCLUDED.status, sha1=EXCLUDED.sha1, crc32=EXCLUDED.crc32, updated_at=now()`,
-			r.DirID, r.FileIdx, r.WorkerID, r.Status, r.SHA1, r.CRC32,
-		)
-	}
-	br := s.pool.SendBatch(ctx, batch)
-	defer br.Close()
-	for range records {
-		if _, err := br.Exec(); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// ScanAllFileStatus streams every row from file_status for startup recovery,
-// invoking fn for each row without buffering the entire result set in memory.
-func (s *Store) ScanAllFileStatus(ctx context.Context, fn func(*FileStatus) error) error {
+// ScanAllItemStatusByWorker streams all item_status rows for a specific worker.
+func (s *Store) ScanAllItemStatusByWorker(ctx context.Context, workerID int, fn func(*ItemStatus) error) error {
 	rows, err := s.pool.Query(ctx,
-		`SELECT dir_id, file_idx, worker_id, status, sha1, crc32 FROM file_status`)
+		`SELECT worker_id, file_id, status, sha1, crc32 FROM item_status WHERE worker_id = $1`, workerID)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 
 	for rows.Next() {
-		var fs FileStatus
-		if err := rows.Scan(&fs.DirID, &fs.FileIdx, &fs.WorkerID, &fs.Status, &fs.SHA1, &fs.CRC32); err != nil {
+		var item ItemStatus
+		if err := rows.Scan(&item.WorkerID, &item.FileID, &item.Status, &item.SHA1, &item.CRC32); err != nil {
 			return err
 		}
-		if err := fn(&fs); err != nil {
+		if err := fn(&item); err != nil {
 			return err
 		}
 	}
 	return rows.Err()
 }
 
-// FileStatusByDir returns all file_status rows for a specific directory.
-func (s *Store) FileStatusByDir(ctx context.Context, dirID int32) ([]FileStatus, error) {
-	rows, err := s.pool.Query(ctx,
-		`SELECT dir_id, file_idx, worker_id, status, sha1, crc32
-		 FROM file_status WHERE dir_id = $1 ORDER BY file_idx, worker_id`, dirID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var result []FileStatus
-	for rows.Next() {
-		var fs FileStatus
-		if err := rows.Scan(&fs.DirID, &fs.FileIdx, &fs.WorkerID, &fs.Status, &fs.SHA1, &fs.CRC32); err != nil {
-			return nil, err
-		}
-		result = append(result, fs)
-	}
-	return result, nil
+// ---- Reclaims ----
+
+type Reclaim struct {
+	ID        int       `json:"id"`
+	WorkerID  int       `json:"worker_id"`
+	DirID     int       `json:"dir_id"`
+	IsBlack   bool      `json:"is_black"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
-// ConflictFiles returns file indices that have conflicting SHA1 hashes in a directory.
-func (s *Store) ConflictFiles(ctx context.Context, dirID int32) ([]int32, error) {
+// GetReclaimsByWorker returns all reclaims for a specific worker.
+func (s *Store) GetReclaimsByWorker(ctx context.Context, workerID int) ([]Reclaim, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT file_idx FROM file_status WHERE dir_id = $1
-		 GROUP BY file_idx HAVING COUNT(DISTINCT sha1) FILTER (WHERE sha1 IS NOT NULL) > 1`,
-		dirID)
+		`SELECT id, worker_id, dir_id, is_black, created_at FROM reclaims WHERE worker_id = $1 ORDER BY id`,
+		workerID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var idxs []int32
+
+	var reclaims []Reclaim
 	for rows.Next() {
-		var idx int32
-		if err := rows.Scan(&idx); err != nil {
+		var r Reclaim
+		if err := rows.Scan(&r.ID, &r.WorkerID, &r.DirID, &r.IsBlack, &r.CreatedAt); err != nil {
 			return nil, err
 		}
-		idxs = append(idxs, idx)
+		reclaims = append(reclaims, r)
 	}
-	return idxs, nil
+	return reclaims, nil
+}
+
+// InsertReclaim creates a new reclaim record.
+func (s *Store) InsertReclaim(ctx context.Context, workerID, dirID int, isBlack bool) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO reclaims (worker_id, dir_id, is_black) VALUES ($1, $2, $3)`,
+		workerID, dirID, isBlack)
+	return err
+}
+
+// DeleteReclaim removes a reclaim record by ID.
+func (s *Store) DeleteReclaim(ctx context.Context, reclaimID int) error {
+	_, err := s.pool.Exec(ctx,
+		`DELETE FROM reclaims WHERE id = $1`, reclaimID)
+	return err
+}
+
+// ---- Archive Status ----
+
+type ArchiveStatus struct {
+	ID        int       `json:"id"`
+	WorkerID  int       `json:"worker_id"`
+	FileID    int64     `json:"file_id"`
+	ArchiveID int       `json:"archive_id"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// GetArchiveStatusByWorker returns all archive status for a specific worker.
+func (s *Store) GetArchiveStatusByWorker(ctx context.Context, workerID int) ([]ArchiveStatus, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, worker_id, file_id, archive_id, created_at FROM archive_status WHERE worker_id = $1 ORDER BY id`,
+		workerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var statuses []ArchiveStatus
+	for rows.Next() {
+		var a ArchiveStatus
+		if err := rows.Scan(&a.ID, &a.WorkerID, &a.FileID, &a.ArchiveID, &a.CreatedAt); err != nil {
+			return nil, err
+		}
+		statuses = append(statuses, a)
+	}
+	return statuses, nil
+}
+
+// ---- Archived ----
+
+type Archived struct {
+	ID        int       `json:"id"`
+	RawJSON   []byte    `json:"raw_json"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// InsertArchived creates a new archived record.
+func (s *Store) InsertArchived(ctx context.Context, rawJSON []byte) (int, error) {
+	var id int
+	err := s.pool.QueryRow(ctx,
+		`INSERT INTO archived (raw_json) VALUES ($1) RETURNING id`,
+		rawJSON).Scan(&id)
+	return id, err
+}
+
+// GetArchivedByID returns an archived record by ID.
+func (s *Store) GetArchivedByID(ctx context.Context, id int) (*Archived, error) {
+	a := &Archived{}
+	err := s.pool.QueryRow(ctx,
+		`SELECT id, raw_json, created_at FROM archived WHERE id = $1`, id,
+	).Scan(&a.ID, &a.RawJSON, &a.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return a, nil
 }
