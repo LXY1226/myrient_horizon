@@ -51,8 +51,8 @@ func LoadTree(path string) error {
 		return err
 	}
 	Tree = &ServerTree{
-		base:       base,
-		fileHashes: make([]map[int][]byte, len(base.Files)),
+		base:       tree,
+		fileHashes: make([]map[int][]byte, len(tree.Files)),
 	}
 	return nil
 }

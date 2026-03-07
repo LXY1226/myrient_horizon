@@ -13,6 +13,11 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// reporter maintains WebSocket connection to server and reports task status.
+// Follows the long-running loop pattern:
+// - Run() never returns unless context cancelled, uses exponential backoff for reconnections
+// - Close() returns *sync.WaitGroup for graceful shutdown coordination
+// - All log messages prefixed with "reporter: " for identification
 type reporter struct {
 	vMu           sync.Mutex
 	verified      []protocol.VerifyReport
@@ -27,6 +32,9 @@ type reporter struct {
 
 var Reporter *reporter
 
+// Run connects to the server WebSocket and starts the report loop.
+// Pattern: Exponential backoff reconnections with max cap (30s).
+// Never returns - runs until process termination.
 func (r *reporter) Run(wsURL, workerKey string) {
 	if len(wsURL) > 4 && wsURL[:4] == "http" {
 		wsURL = "ws" + wsURL[4:]

@@ -4,13 +4,13 @@ import (
 	"context"
 	"flag"
 	"log"
-	stree "myrient-horizon/internal/server"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	stree "myrient-horizon/internal/server"
 	"myrient-horizon/pkg/myrienttree"
 )
 
@@ -25,6 +25,14 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		log.Println("Shutting down...")
+		cancel()
+	}()
 
 	// 1. Load flatbuffer tree.
 	log.Printf("Loading tree from %s...", *dataDir+"/full_tree.fbd")
@@ -85,17 +93,14 @@ func main() {
 		}
 	}()
 
-	// 6. Graceful shutdown.
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
-	log.Println("Shutting down...")
+	// 6. Wait for shutdown signal via context.
+	<-ctx.Done()
 
+	// 7. Graceful shutdown.
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Printf("Shutdown error: %v", err)
 	}
-	cancel()
 	log.Println("Server stopped")
 }

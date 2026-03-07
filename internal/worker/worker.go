@@ -7,6 +7,12 @@ import (
 	"myrient-horizon/internal/worker/config"
 )
 
+// EnsureConfig loads or initializes worker configuration following the bootstrap pattern:
+// 1. Load from disk, fail if corrupted
+// 2. Auto-create default if missing (then exit with instructions)
+// 3. Auto-register with server if no key (one-time setup)
+// 4. Set config.Global singleton for package-wide access
+// Returns: *config.WorkerConfig - always valid or fatal
 func EnsureConfig() *config.WorkerConfig {
 	workDir, _ := os.Getwd()
 

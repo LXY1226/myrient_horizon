@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"myrient-horizon/internal/worker/aria2"
-	"myrient-horizon/pkg/protocol"
 )
 
 var badVerifyTaskCh = make(chan Task, 16384)
@@ -18,14 +17,16 @@ var downloadTaskReplaced = make(chan struct{})
 var downloader Downloader
 
 /*
-   TODO: worker流程
-   - connect aria2
-   - 挂上各种handler(任务完成/失败的call)
-   - 获取未完成任务计数（排队+active），少于任务排队数（20）多少就加多少，补足任务列表，每分钟重复执行这个操作，与完成时添加任务并行
-   - 任务发送到aria2前做最后检测：如果.download文件存在则添加但不减少计数
-   - 任务完成后如果gid不在缓存中（非本次运行添加的任务）调接口获得信息，得到任务URL和文件路径来确定是哪个文件并继续执行
-   - 任务完成则分发给verifier
-   - 任务优先从badVerifyTaskCh获取
+   Worker workflow (TODO):
+   - Connect to aria2
+   - Attach various handlers (task completion/failure callbacks)
+   - Get count of incomplete tasks (queued + active), add tasks to reach queue limit (20),
+     repeat this operation every minute, running in parallel with task completion handling
+   - Final check before sending task to aria2: if .download file exists, add but don't decrement count
+   - After task completion, if GID not in cache (not a task added in this run), call API to get info,
+     get task URL and file path to determine which file, then continue execution
+   - Distribute to verifier on task completion
+   - Prioritize tasks from badVerifyTaskCh
 */
 
 var (
@@ -34,6 +35,10 @@ var (
 )
 
 // Downloader consumes download tasks and submits them to aria2.
+// Follows the stateful runtime owner pattern:
+// - Singleton initialized via sync.Once in InitDownloader()
+// - External access via GetDownloader() accessor
+// - Main loop runs in Run() goroutine
 type Downloader struct {
 	taskCh      chan Task
 	client      *aria2.Client
@@ -42,6 +47,8 @@ type Downloader struct {
 }
 
 // InitDownloader initialises the singleton Downloader. Must be called once.
+// Pattern: sync.Once ensures thread-safe single initialization.
+// Returns: *Downloader - the singleton instance
 func InitDownloader(client *aria2.Client, taskBufSize int) *Downloader {
 	downloaderOnce.Do(func() {
 		downloaderInstance = &Downloader{
@@ -50,6 +57,12 @@ func InitDownloader(client *aria2.Client, taskBufSize int) *Downloader {
 			gidMap: make(map[string]*Task),
 		}
 	})
+	return downloaderInstance
+}
+
+// GetDownloader returns the singleton Downloader instance.
+// Must be called after InitDownloader(). Returns nil if not initialized.
+func GetDownloader() *Downloader {
 	return downloaderInstance
 }
 
