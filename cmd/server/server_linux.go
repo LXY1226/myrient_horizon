@@ -7,5 +7,5 @@ import (
 
 func getListener(addr string) (net.Listener, error) {
 	os.Remove("http.sock")
-	return net.ListenUnix("unix", &net.UnixAddr{"http.sock", "unix"})
+	return net.ListenUnix("unix", &net.UnixAddr{Name: "http.sock", Net: "unix"})
 }

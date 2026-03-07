@@ -5,6 +5,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"log"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -61,10 +63,45 @@ type Store struct {
 	pool *pgxpool.Pool
 }
 
-// DB is the global Store instance.
+var (
+	dbInstance *Store
+	dbOnce     sync.Once
+)
+
+// DB is the global Store instance (deprecated: use GetDB()).
 var DB *Store
 
+// InitDB initializes the singleton Store. Must be called once before GetDB().
+// Pattern: sync.Once ensures thread-safe single initialization.
+func InitDB(connString string) *Store {
+	dbOnce.Do(func() {
+		pool, err := pgxpool.New(context.Background(), connString)
+		if err != nil {
+			log.Fatalf("db: failed to connect: %v", err)
+		}
+		if err := pool.Ping(context.Background()); err != nil {
+			pool.Close()
+			log.Fatalf("db: failed to ping: %v", err)
+		}
+		if _, err := pool.Exec(context.Background(), schema); err != nil {
+			pool.Close()
+			log.Fatalf("db: failed to migrate schema: %v", err)
+		}
+		dbInstance = &Store{pool: pool}
+		DB = dbInstance // Maintain backward compatibility
+		log.Println("db: initialized successfully")
+	})
+	return dbInstance
+}
+
+// GetDB returns the singleton Store instance.
+// Must be called after InitDB(). Returns nil if not initialized.
+func GetDB() *Store {
+	return dbInstance
+}
+
 // NewStore creates a new Store and runs schema migration.
+// Deprecated: Use InitDB() for singleton pattern.
 func NewStore(ctx context.Context, connString string) (*Store, error) {
 	pool, err := pgxpool.New(ctx, connString)
 	if err != nil {
@@ -81,7 +118,8 @@ func NewStore(ctx context.Context, connString string) (*Store, error) {
 	return &Store{pool: pool}, nil
 }
 
-// Close shuts down the connection pool.
+// Close shuts down the database connection pool.
+// Pattern: Lifecycle cleanup - call during graceful shutdown.
 func (s *Store) Close() {
 	s.pool.Close()
 }

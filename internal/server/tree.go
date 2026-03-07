@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"log"
 	"sync"
 
 	mt "myrient-horizon/pkg/myrienttree"
@@ -42,9 +43,33 @@ type ServerTree struct {
 	fileHashes []map[int][]byte
 }
 
-// Tree is the global ServerTree instance.
+var (
+	treeInstance *ServerTree
+	treeOnce     sync.Once
+)
+
+// Tree is the global ServerTree instance (deprecated: use GetTree()).
 var Tree *ServerTree
 
+// InitTree initializes the singleton ServerTree. Must be called once before GetTree().
+// Pattern: sync.Once ensures thread-safe single initialization.
+func InitTree(base *mt.Tree[DirExt, FileExt]) *ServerTree {
+	treeOnce.Do(func() {
+		treeInstance = NewTree(base)
+		Tree = treeInstance // Maintain backward compatibility
+		log.Println("tree: initialized successfully")
+	})
+	return treeInstance
+}
+
+// GetTree returns the singleton ServerTree instance.
+// Must be called after InitTree(). Returns nil if not initialized.
+func GetTree() *ServerTree {
+	return treeInstance
+}
+
+// LoadTree loads a tree from file and initializes the global instance.
+// Deprecated: Use InitTree() for singleton pattern after loading.
 func LoadTree(path string) (*ServerTree, error) {
 	tree, err := mt.LoadFromFile[DirExt, FileExt](path)
 	if err != nil {

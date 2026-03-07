@@ -1,3 +1,16 @@
+// Package server implements the HTTP server and WebSocket RPC for the distributed download system.
+//
+// Server runtime patterns (aligned with worker-family):
+//   - Pattern 2: sync.Once singleton with Init/Get (DB, Tree) - for stateful services
+//   - Pattern 4: Constructor-owned (Handler, Hub) - created in main, passed around
+//   - Pattern 6: Immutable config exception (upgrader) - documented exception
+//
+// All log messages use package-level prefixes for identification:
+//   - "server:" - main server lifecycle
+//   - "handler:" - HTTP request handling
+//   - "db:" - database operations
+//   - "tree:" - tree state operations
+//   - "wsrpc:" - WebSocket RPC operations
 package server
 
 import (
@@ -17,12 +30,15 @@ type Handler struct {
 	hub *Hub
 }
 
-// New creates a new Handler.
+// New creates a new Handler with the given Hub.
+// Pattern: Constructor injection (Pattern 4) - Hub created in main and passed here.
 func New(hub *Hub) *Handler {
 	return &Handler{hub: hub}
 }
 
-// corsMiddleware wraps an http.Handler and adds CORS headers to every response.
+// corsMiddleware wraps an http.Handler and logs requests.
+// Currently a minimal implementation - logs all requests with "handler:" prefix.
+// Pattern: Standard middleware chaining.
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		//w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -36,7 +52,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 		//}
 
 		//start := time.Now()
-		log.Printf("%s %s %s %s", time.Now().Format("15:04:05"),
+		log.Printf("handler: %s %s %s %s", time.Now().Format("15:04:05"),
 			r.Header.Get("ali-real-client-ip"),
 			r.Method, r.RequestURI)
 
@@ -48,6 +64,12 @@ func corsMiddleware(next http.Handler) http.Handler {
 }
 
 // Register sets up all HTTP routes on the given mux and returns a CORS-enabled handler.
+// Routes:
+//   - POST /api/register - Worker registration (public)
+//   - GET  /api/ws - WebSocket RPC endpoint
+//   - PATCH /api/manage/worker/{id}/config - Update worker config (auth)
+//   - GET  /api/manage/workers - List all workers (auth)
+//   - GET  /api/stats/* - Statistics APIs (public)
 func (h *Handler) Register(mux *http.ServeMux) http.Handler {
 	// Worker registration (public).
 	mux.HandleFunc("POST /api/register", h.handleRegister)
@@ -87,7 +109,7 @@ func (h *Handler) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		workerID, err := DB.AuthenticateWorker(r.Context(), key)
+		workerID, err := GetDB().AuthenticateWorker(r.Context(), key)
 		if err != nil || workerID == 0 {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -107,7 +129,7 @@ func (h *Handler) handleRegister(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	id, key, err := DB.RegisterWorker(r.Context(), req.Name)
+	id, key, err := GetDB().RegisterWorker(r.Context(), req.Name)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -132,7 +154,7 @@ func (h *Handler) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	configJSON, _ := json.Marshal(cfg)
-	if err := DB.UpdateWorkerConfig(r.Context(), workerID, configJSON); err != nil {
+	if err := GetDB().UpdateWorkerConfig(r.Context(), workerID, configJSON); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -145,7 +167,7 @@ func (h *Handler) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleListWorkers(w http.ResponseWriter, r *http.Request) {
-	workers, err := DB.ListWorkers(r.Context())
+	workers, err := GetDB().ListWorkers(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -181,7 +203,7 @@ func (h *Handler) handleConflicts(w http.ResponseWriter, r *http.Request) {
 // ---- Statistics API ----
 
 func (h *Handler) handleOverview(w http.ResponseWriter, r *http.Request) {
-	stats := Tree.GetDirStats(0) // Root dir = entire tree.
+	stats := GetTree().GetDirStats(0) // Root dir = entire tree.
 	writeJSON(w, http.StatusOK, StatsToOverview(stats))
 }
 
@@ -195,7 +217,7 @@ func (h *Handler) handleTree(w http.ResponseWriter, r *http.Request) {
 
 	dirID := int32(0)
 	if p := r.URL.Query().Get("path"); p != "" {
-		id, ok := Tree.Base().DirByPath(p)
+		id, ok := GetTree().Base().DirByPath(p)
 		if !ok {
 			http.Error(w, "directory not found", http.StatusNotFound)
 			return
@@ -203,16 +225,16 @@ func (h *Handler) handleTree(w http.ResponseWriter, r *http.Request) {
 		dirID = id
 	}
 
-	nodes := Tree.BuildTreeNodes(dirID, depth)
+	nodes := GetTree().BuildTreeNodes(dirID, depth)
 	writeJSON(w, http.StatusOK, map[string]any{"directories": nodes})
 }
 
 func (h *Handler) handleSSEStream(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Query().Get("path")
 	if path == "" {
-		path = Tree.Base().Dirs[0].Path // root
+		path = GetTree().Base().Dirs[0].Path // root
 	}
-	dirID, ok := Tree.Base().DirByPath(path)
+	dirID, ok := GetTree().Base().DirByPath(path)
 	if !ok {
 		http.Error(w, "directory not found", http.StatusNotFound)
 		return
@@ -245,12 +267,12 @@ func (h *Handler) handleSSEStream(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) sendSSEDirStats(w http.ResponseWriter, flusher http.Flusher, dirID int32, path string) {
-	children := Tree.ChildDirStats(dirID)
+	children := GetTree().ChildDirStats(dirID)
 	data := map[string]any{
 		"type":     "dir_stats",
 		"path":     path,
 		"dir_id":   dirID,
-		"stats":    Tree.GetDirStats(dirID),
+		"stats":    GetTree().GetDirStats(dirID),
 		"children": children,
 	}
 	jsonData, _ := json.Marshal(data)
@@ -266,7 +288,7 @@ func (h *Handler) handleWorkerStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	worker, err := DB.GetWorker(r.Context(), workerID)
+	worker, err := GetDB().GetWorker(r.Context(), workerID)
 	if err != nil {
 		http.Error(w, "worker not found", http.StatusNotFound)
 		return
@@ -295,14 +317,14 @@ func (h *Handler) handleDirDetail(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing path", http.StatusBadRequest)
 		return
 	}
-	dirID, ok := Tree.Base().DirByPath(path)
+	dirID, ok := GetTree().Base().DirByPath(path)
 	if !ok {
 		http.Error(w, "directory not found", http.StatusNotFound)
 		return
 	}
 
 	// Build file list with status from in-memory tree (no DB query needed in new design)
-	dir := &Tree.Base().Dirs[dirID]
+	dir := &GetTree().Base().Dirs[dirID]
 	type fileInfo struct {
 		Idx      int32  `json:"idx"`
 		Name     string `json:"name"`
@@ -314,7 +336,7 @@ func (h *Handler) handleDirDetail(w http.ResponseWriter, r *http.Request) {
 	files := make([]fileInfo, 0, dir.FileEnd-dir.FileStart)
 
 	for i := dir.FileStart; i < dir.FileEnd; i++ {
-		f := &Tree.Base().Files[i]
+		f := &GetTree().Base().Files[i]
 		localIdx := i - dir.FileStart
 		fi := fileInfo{
 			Idx:      localIdx,
@@ -329,13 +351,15 @@ func (h *Handler) handleDirDetail(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"dir_id": dirID,
 		"path":   path,
-		"stats":  Tree.GetDirStats(dirID),
+		"stats":  GetTree().GetDirStats(dirID),
 		"files":  files,
 	})
 }
 
 // ---- Helpers ----
 
+// writeJSON writes a JSON response with the given status code.
+// Helper: standardizes Content-Type header and encoding.
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
