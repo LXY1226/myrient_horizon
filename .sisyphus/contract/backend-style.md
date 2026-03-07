@@ -318,8 +318,8 @@ var upgrader = websocket.Upgrader{...}
 
 ### Migration Status
 
-- [ ] `db.go`: Migrated to `InitDB()` / `GetDB()`
-- [ ] `tree.go`: Migrated to `InitTree()` / `GetTree()`
+- [x] `db.go`: Migrated to `InitDB()` / `GetDB()`
+- [x] `tree.go`: Migrated to `InitTree()` / `GetTree()`
 - [x] Ownership map documented in `ownership-map.md`
 - [x] Disposition rules added to contract
 
