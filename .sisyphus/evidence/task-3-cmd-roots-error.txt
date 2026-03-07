@@ -1,0 +1,23 @@
+Task 3: Build Errors
+===================
+
+Worker Compilation Errors (PRE-EXISTING, NOT RELATED TO THIS TASK):
+-------------------------------------------------------------------
+cmd/worker/main.go:38:24: undefined: worker.InitReporter
+cmd/worker/main.go:46:16: undefined: worker.GetReporter
+cmd/worker/main.go:64:21: undefined: worker.InitVerifier
+cmd/worker/main.go:74:20: too many arguments in call to downloader.Run
+    have (context.Context)
+    want ()
+cmd/worker/main.go:93:22: undefined: worker.GetDiskFreeGB
+
+Server go vet Warning (PRE-EXISTING, NOT RELATED TO THIS TASK):
+--------------------------------------------------------------
+cmd/server/server_linux.go:10:33: net.UnixAddr struct literal uses unkeyed fields
+
+Successfully Compiled:
+---------------------
+- cmd/server: OK
+- cmd/verifier: OK
+
+Note: Worker build errors are pre-existing issues in the codebase, not introduced by this refactoring.

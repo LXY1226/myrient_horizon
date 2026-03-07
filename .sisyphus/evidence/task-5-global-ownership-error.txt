@@ -1,0 +1,94 @@
+Task 5 - Backend Global Ownership Error/Blocked Tasks
+=====================================================
+
+Date: 2026-03-07
+Status: PLANNING COMPLETE - No implementation errors
+
+═══════════════════════════════════════════════════════════════════
+TASK STATUS
+═══════════════════════════════════════════════════════════════════
+
+This was a planning task to define the ownership migration path.
+No code was modified, therefore no compilation errors.
+
+Status: ✓ SUCCESS - Ownership plan documented
+
+═══════════════════════════════════════════════════════════════════
+BLOCKING RELATIONSHIPS
+═══════════════════════════════════════════════════════════════════
+
+Task 5 COMPLETES → Unblocks Tasks 6, 7, 8, 9, 10
+
+Blocked Tasks (waiting for this plan):
+----------------------------------------
+- Task 6: Server Handler Refactor
+  Requires: InitDB/GetDB pattern defined
+  
+- Task 7: Server Tree Alignment
+  Requires: InitTree/GetTree pattern defined
+  
+- Task 8: Handler Call Site Updates
+  Requires: GetDB()/GetTree() accessors exist
+  
+- Task 9: WebSocket Call Site Updates
+  Requires: GetDB()/GetTree() accessors exist
+  
+- Task 10: Main Package Updates
+  Requires: InitDB()/InitTree() functions defined
+
+Prerequisites for Migration Implementation:
+-------------------------------------------
+1. Add InitDB()/GetDB() to internal/server/db.go
+2. Add InitTree()/GetTree() to internal/server/tree.go
+3. Update cmd/server/main.go to use Init functions
+4. Update internal/server/handler.go to use Get accessors
+5. Update internal/server/wsrpc.go to use Get accessors
+
+═══════════════════════════════════════════════════════════════════
+POTENTIAL RISKS (Migration Phase)
+═══════════════════════════════════════════════════════════════════
+
+Risk 1: Initialization Order
+------------------------------
+Tree depends on base tree loaded from file.
+DB has no dependencies.
+Hub depends on nothing.
+
+Order in main.go:
+    1. Load tree from file
+    2. InitTree(baseTree)
+    3. InitDB(connString)
+    4. NewHub()
+
+Risk 2: Circular Dependencies
+-------------------------------
+Current: No circular dependencies detected.
+After migration: Still none expected.
+
+Risk 3: Test Impact
+-------------------
+Tests using DB or Tree directly will need updates.
+Search for test files:
+    grep -r "stree\.DB\|stree\.Tree" internal/server/*_test.go
+
+═══════════════════════════════════════════════════════════════════
+NOTES FOR IMPLEMENTING AGENTS
+═══════════════════════════════════════════════════════════════════
+
+1. Migration can be done incrementally:
+   - Add Init/Get functions alongside existing globals
+   - Update call sites one file at a time
+   - Remove old global reference last
+
+2. Keep backward compatibility during transition:
+   - Keep var DB and var Tree as deprecated
+   - Have them delegate to GetDB()/GetTree()
+   - Remove after all call sites updated
+
+3. Worker package consistency:
+   - server InitDB() should mirror worker InitDownloader()
+   - server GetDB() should mirror worker GetDownloader()
+
+═══════════════════════════════════════════════════════════════════
+END OF ERROR/BLOCKED TASKS REPORT
+═══════════════════════════════════════════════════════════════════

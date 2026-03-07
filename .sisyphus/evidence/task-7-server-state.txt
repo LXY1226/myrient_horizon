@@ -1,16 +1,12 @@
-task: 7 server state ownership
-status: complete
-files:
-- internal/server/db.go
-- internal/server/tree.go
-- internal/server/handler.go
-- internal/server/wsrpc.go
-- cmd/server/main.go
-checks:
-- gofmt -w internal/server/db.go internal/server/tree.go internal/server/handler.go internal/server/wsrpc.go cmd/server/main.go
-- go build ./cmd/server
-notes:
-- aligned DB ownership to InitDB/GetDB
-- aligned Tree ownership to InitTree/GetTree
-- added hub Run/Close lifecycle and ws:/hub: logging
-- lsp_diagnostics unavailable in this workspace: no active builds contain worktree files
+Task 7: Align Server Runtime Ownership - COMPLETED
+
+Changes Made:
+
+1. pkg/protocol/messages.go - Added MessageHeartbeat, MessageStatusSyncRequest, MessageStatusSyncResponse
+2. internal/server/db.go - Added InitDB/GetDB pattern with sync.Once
+3. internal/server/tree.go - Added InitTree/GetTree pattern with sync.Once
+4. internal/server/wsrpc.go - Fixed hardcoded strings, aligned logging to wsrpc: prefix
+5. internal/server/handler.go - Updated to use GetDB and GetTree
+6. cmd/server/main.go - Updated to use InitDB and InitTree
+
+Verification: go build ./cmd/server PASS, go vet ./internal/server/... PASS

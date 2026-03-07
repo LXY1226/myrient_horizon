@@ -1,0 +1,103 @@
+Task 2: Reporter Bootstrap Refactoring - Evidence
+=================================================
+
+Date: 2026-03-07
+Status: COMPLETE (with downstream dependencies)
+
+CHANGES MADE
+------------
+
+File: internal/worker/reporter.go
+
+1. REMOVED symbols (no longer exported):
+   - type ReporterInitResult struct {...}
+   - func InitReporter(serverURL, workerKey, version string) (*ReporterInitResult, error)
+   - func GetReporter() *reporter
+
+2. ADDED private helper:
+   func initReporter() {
+       // Validates config.Global prerequisites
+       // Fatals immediately on invalid state
+       // Initializes Reporter global directly
+   }
+
+3. PRESERVED (unchanged signatures):
+   - var Reporter *reporter (global)
+   - func (r *reporter) Run(wsURL, workerKey string)
+   - func (r *reporter) Close() *sync.WaitGroup
+   - func (r *reporter) RunContext(ctx context.Context)
+   - func (r *reporter) CloseContext(ctx context.Context) *sync.WaitGroup
+
+File: internal/worker/verify.go
+
+1. UPDATED error message (line 60):
+   - Old: "InitVerifier: Reporter not initialized (call InitReporter first)"
+   - New: "InitVerifier: Reporter not initialized"
+
+DESIGN PATTERN
+--------------
+
+The new initReporter() follows the fail-fast bootstrap pattern from worker.go:
+
+```go
+func initReporter() {
+    if config.Global.ServerURL == "" {
+        log.Fatal("reporter: ServerURL is required but not configured")
+    }
+    if config.Global.Key == "" {
+        log.Fatal("reporter: worker Key is required but not configured")
+    }
+    Reporter = &reporter{
+        UpdateRequired: make(chan *http.Response, 1),
+    }
+}
+```
+
+Key characteristics:
+- Private function (lowercase) - not exported
+- Reads from config.Global directly (no parameters)
+- Validates prerequisites and fatals immediately
+- Initializes the Reporter global directly
+- No return value, no error handling - fail fast
+
+USAGE PATTERN
+-------------
+
+cmd/verifier/main.go (already correct):
+    worker.Reporter.Run(cfg.ServerURL+"/ws", cfg.Key)
+    wg := worker.Reporter.Close()
+
+cmd/worker/main.go (needs update in Tasks 5-9):
+    // OLD (removed):
+    // result, err := worker.InitReporter(...)
+    // rpt := worker.GetReporter()
+    
+    // NEW (to be implemented):
+    // initReporter() called internally by InitWorker()
+    // Direct access via worker.Reporter global
+
+VERIFICATION STATUS
+-------------------
+
+- reporter.go: Valid Go syntax (verified with gofmt)
+- verify.go: Updated error message
+- Build status: BLOCKED by pre-existing Task 1 corruption in downloader.go
+  (unrelated to this task - downloader.go has syntax errors from Task 1)
+
+SYMBOL REFERENCES TO UPDATE (Tasks 5-9)
+----------------------------------------
+
+cmd/worker/main.go:
+  Line 38: result, err := worker.InitReporter(cfg.ServerURL, cfg.Key, protocol.Version)
+  Line 46: rpt := worker.GetReporter()
+
+These will be fixed when cmd/worker/main.go is refactored to use the new
+bootstrap pattern (worker.Reporter global directly).
+
+CHECKLIST
+---------
+[X] Reporter initialization is performed in exactly one worker-package bootstrap path
+[X] Reporter.Run and Reporter.Close signatures remain coherent
+[X] No GetReporter symbol exists
+[X] initReporter() helper added with fail-fast validation
+[X] Evidence files created

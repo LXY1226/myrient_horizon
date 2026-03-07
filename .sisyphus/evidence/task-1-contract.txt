@@ -1,0 +1,197 @@
+================================================================================
+EVIDENCE: Task 1 - Worker/Verifier Bootstrap Contract & Stale API Removal
+================================================================================
+Generated: 2025-03-07
+Purpose: Document exact contract before editing code
+================================================================================
+
+PART 1: SUPPORTED BOOTSTRAP CONTRACT
+================================================================================
+
+The following bootstrap sequence is the ONLY supported pattern:
+
+  EnsureConfig() → config.Global assignment → LoadTree() → InitXxx() → direct globals
+
+Pattern Source: cmd/verifier/main.go (lines 28-54)
+--------------------------------------------------------------------------------
+Step 1: Load config
+  cfg, err := config.Load(workDir)
+  if cfg == nil || cfg.Key == "" {
+      log.Fatalf("No registered worker.json found...")
+  }
+
+Step 2: Set global singleton
+  config.Global = *cfg
+
+Step 3: Load tree file
+  worker.LoadTree(cfg.TreeFile)
+
+Step 4: Start reporter (direct global access)
+  worker.Reporter.Run(cfg.ServerURL+"/ws", cfg.Key)
+
+Step 5: Direct package global usage throughout
+  worker.MatchTaskByPath(...)
+  task.Verify()
+  worker.Reporter.Close()
+
+Files Responsible for Each Step:
+--------------------------------------------------------------------------------
+1. config.Load()         → internal/worker/config/config.go (lines 63-78)
+2. config.Global         → internal/worker/config/config.go (line 32)
+3. EnsureConfig()        → internal/worker/worker.go (lines 16-46)
+4. worker.LoadTree()     → internal/worker/tree.go (implied)
+5. worker.Reporter       → internal/worker/reporter.go (line 41, exported global)
+6. worker.InitVerifier() → internal/worker/verify.go (implied)
+7. worker.InitDownloader() → internal/worker/downloader.go (implied)
+
+================================================================================
+
+PART 2: STALE SYMBOLS TO DELETE (NOT REIMPLEMENT)
+================================================================================
+
+These symbols referenced by cmd/worker/main.go are STALE and must be DELETED,
+not preserved with compatibility shims:
+
+STALE SYMBOLS IN cmd/worker/main.go:
+--------------------------------------------------------------------------------
+Line 38:  result, err := worker.InitReporter(cfg.ServerURL, cfg.Key, protocol.Version)
+          ↳ InitReporter returns *ReporterInitResult with UpdateResp field
+          ↳ cmd/worker/main.go uses result.UpdateResp (line 42-44)
+          ↳ STALE: Update check should happen differently or be removed
+
+Line 46:  rpt := worker.GetReporter()
+          ↳ GetReporter() is wrapper around Reporter global
+          ↳ STALE: Use direct worker.Reporter global access like verifier
+
+Line 47:  defer rpt.CloseContext(ctx)
+          ↳ CloseContext exists but is non-idiomatic wrapper
+          ↳ STALE: Use worker.Reporter.Close() like verifier (line 107)
+
+Line 67:  rpt.OnConfigUpdate = func(cfg protocol.WorkerConfig) {...}
+          ↳ Sets callback for server config updates
+          ↳ References protocol.WorkerConfig fields: DownloadConcurrency, VerifyConcurrency, Simultaneous
+          ↳ STALE: Runtime config updates not supported in current architecture
+
+Line 80:  case resp := <-rpt.UpdateRequired:
+          ↳ Listens on UpdateRequired channel from ReporterInitResult
+          ↳ STALE: Update mechanism needs redesign
+
+Line 98:  if err := rpt.SendHeartbeat(ctx, freeGB, ...); err != nil {...}
+          ↳ Explicit heartbeat method
+          ↳ STALE: Reporter has built-in tick-based reporting in report()
+
+Line 106: _ = rpt.Flush(context.Background())
+          ↳ Flush pending reports on shutdown
+          ↳ STALE: Close() already handles graceful shutdown
+
+IMPLEMENTATION STATUS in reporter.go:
+--------------------------------------------------------------------------------
+Symbol              | Line | Status      | Action
+--------------------+------+-------------+-----------------------------------
+InitReporter        | 236  | Exists      | REMOVE - don't fix, delete
+GetReporter         | 247  | Exists      | REMOVE - use direct global
+ReporterInitResult  | 229  | Exists      | REMOVE - return value only
+UpdateResp field    | 230  | Exists      | REMOVE - part of result struct
+OnConfigUpdate      | 35   | Exists      | REMOVE - callback field
+UpdateRequired      | 38   | Exists      | REMOVE - channel field
+SendHeartbeat       | 253  | Exists      | REMOVE - method on reporter
+Flush               | 260  | Exists      | REMOVE - method on reporter
+CloseContext        | 145  | Exists      | REMOVE - use Close() instead
+
+================================================================================
+
+PART 3: CONFIG FIELD MISMATCH CONFIRMATION
+================================================================================
+
+The cmd/worker/main.go config-update branch CANNOT be preserved as-is because
+protocol.WorkerConfig fields do NOT exist in internal/worker/config.WorkerConfig.
+
+protocol.WorkerConfig (pkg/protocol/messages.go lines 126-130):
+--------------------------------------------------------------------------------
+type WorkerConfig struct {
+    DownloadConcurrency int  `json:"download_concurrency"`
+    VerifyConcurrency   int  `json:"verify_concurrency"`
+    Simultaneous        bool `json:"simultaneous"`
+}
+
+internal/worker/config.WorkerConfig (internal/worker/config/config.go lines 13-26):
+--------------------------------------------------------------------------------
+type WorkerConfig struct {
+    Key           string   `json:"key"`
+    ServerURL     string   `json:"server_url"`
+    Name          string   `json:"name"`
+    TreeFile      string   `json:"tree_file"`
+    DownloadDir   string   `json:"download_dir"`
+    Aria2cPath    string   `json:"aria2c_path"`
+    Aria2Port     int      `json:"aria2_port"`
+    Aria2Conf     string   `json:"aria2_conf"`
+    Aria2Args     []string `json:"aria2_args"`
+    Aria2RPCURL   string   `json:"aria2_rpc_url"`
+    DiskMinGB     float64  `json:"disk_min_gb"`
+    HeartBeatIntv int      `json:"heart_beat_interval"`
+}
+
+CONFIRMATION: DownloadConcurrency, VerifyConcurrency, and Simultaneous fields
+DO NOT EXIST in the local worker config. They only exist in the server-to-worker
+protocol message type. This means:
+
+1. The config update callback in cmd/worker/main.go lines 67-70 sets verifier
+   concurrency from protocol.WorkerConfig, which is received from server
+2. There is NO corresponding local config to persist these values
+3. Therefore, this branch cannot be preserved as-is and must be DELETED
+
+================================================================================
+
+PART 4: VERIFICATION COMMANDS
+================================================================================
+
+Build verification shows worker currently compiles (no errors):
+  $ go build ./cmd/worker
+  (no output = success)
+
+Grep results for stale symbols:
+  $ grep -rn "GetReporter\|InitReporter\|UpdateRequired\|OnConfigUpdate\|SendHeartbeat\|Flush" 
+  
+  Found in:
+  - cmd/worker/main.go (all 6 symbols used)
+  - cmd/verifier/main.go (only bw.Flush() - bufio.Writer, unrelated)
+  - internal/worker/reporter.go (all 6 symbols defined)
+  - pkg/protocol/messages.go (UpdateRequiredResponse type, unrelated)
+  - internal/worker/updater.go (Apply function uses UpdateRequiredResponse)
+  - internal/server/*.go (server-side, unrelated)
+
+================================================================================
+
+PART 5: SUMMARY - WHAT TO DELETE
+================================================================================
+
+IN cmd/worker/main.go - DELETE these code blocks:
+--------------------------------------------------------------------------------
+1. Lines 38-44:   InitReporter call + UpdateResp handling
+2. Lines 46-47:   GetReporter() + CloseContext
+3. Lines 67-70:   OnConfigUpdate callback assignment
+4. Lines 76-83:   UpdateRequired channel listener goroutine  
+5. Lines 85-103:  SendHeartbeat ticker goroutine
+6. Line 106:      Flush() call
+
+IN internal/worker/reporter.go - DELETE these definitions:
+--------------------------------------------------------------------------------
+1. Lines 228-241: ReporterInitResult struct + InitReporter function
+2. Lines 244-249: GetReporter function
+3. Line 35:       OnConfigUpdate field (in reporter struct)
+4. Line 38:       UpdateRequired field (in reporter struct)
+5. Lines 251-256: SendHeartbeat method
+6. Lines 258-263: Flush method
+7. Lines 143-148: CloseContext method
+
+VERIFIER PATTERN TO COPY (cmd/verifier/main.go):
+--------------------------------------------------------------------------------
+  worker.LoadTree(cfg.TreeFile)
+  worker.Reporter.Run(cfg.ServerURL+"/ws", cfg.Key)
+  // ... work ...
+  wg := worker.Reporter.Close()
+  wg.Wait()
+
+================================================================================
+END OF EVIDENCE
+================================================================================

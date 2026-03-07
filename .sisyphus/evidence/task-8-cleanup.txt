@@ -1,0 +1,53 @@
+Task 8: Worker/Verifier Cleanup - Evidence of Completion
+=====================================================
+Date: 2026-03-07
+Status: COMPLETED
+
+Summary
+-------
+Completed cleanup pass over cmd/worker, cmd/verifier, and internal/worker to remove stale wrappers, dead code, and bootstrap drift.
+
+Files Modified
+--------------
+1. internal/worker/reporter.go
+   - Removed commented-out OnConfigUpdate handler code (lines 161-166)
+     * Stale dead code referencing r.OnConfigUpdate callback
+     * Case statement for "config_update" message type (commented out)
+
+Banned Patterns Verified Removed
+---------------------------------
+✓ GetReporter() - NOT FOUND (already clean)
+✓ GetDownloader() - NOT FOUND (already clean)
+✓ sync.Once - NOT FOUND in target files
+✓ UpdateRequired (as function/helper) - NOT FOUND
+✓ OnConfigUpdate - REMOVED (commented-out dead code in reporter.go)
+✓ SendHeartbeat - NOT FOUND (already clean)
+✓ Flush (as helper function) - NOT FOUND
+
+Static Search Results
+---------------------
+Scope: cmd/worker/*.go
+Result: No banned patterns found ✓
+
+Scope: cmd/verifier/main.go
+Result: 
+  - Line 115: bw.Flush() - LEGITIMATE (bufio.Writer.Flush() method, not stale helper)
+  - No other banned patterns found ✓
+
+Scope: internal/worker/*.go
+Result:
+  - updater.go:51: Apply(info protocol.UpdateRequiredResponse) - LEGITIMATE (protocol type usage)
+  - No other banned patterns found ✓
+
+Build Status
+------------
+✓ cmd/worker builds cleanly: go build ./cmd/worker
+✓ cmd/verifier builds cleanly: go build ./cmd/verifier
+✓ No compilation errors
+✓ No unused imports
+
+Notes
+-----
+- bufio.Writer.Flush() in cmd/verifier/main.go is legitimate I/O, not a banned helper
+- protocol.UpdateRequiredResponse type is a legitimate protocol message type
+- All truly stale startup API patterns have been removed

@@ -3,67 +3,258 @@ Task 5 - Backend Global Ownership Evidence
 
 Date: 2026-03-07
 Worktree: /mnt/c/Users/Lin/GolandProjects/myrient-horizon-worktree
+Status: COMPLETED - Ownership migration path defined
 
-Search: grep '^var\s+.*\*' across backend Go files
-Matches:
-- internal/server/tree.go:46 -> var Tree *ServerTree
-- internal/server/db.go:66 -> var DB *Store
-- internal/worker/reporter.go:28 -> var Reporter *reporter
-- internal/worker/task.go:31 -> var iTree *mt.Tree[dirExt, fileExt]
-- internal/worker/verify.go:16 -> var verifyTaskCh = make(chan *Task, 16384)
+═══════════════════════════════════════════════════════════════════
+PART 1: GLOBAL INVENTORY
+═══════════════════════════════════════════════════════════════════
 
-Server package-level var inventory
-Search: grep '^var\s+' in internal/server
-Matches:
-- internal/server/db.go:66 -> var DB *Store
-- internal/server/tree.go:46 -> var Tree *ServerTree
-- internal/server/wsrpc.go:18 -> var upgrader = websocket.Upgrader{...}
+Server Package Globals Found:
+-----------------------------
+1. internal/server/db.go:65
+   var DB *Store
+   Current: Direct global, assigned in cmd/server/main.go:47
 
-Required file reads
-- internal/server/db.go
-  - `DB` is a package global store pointer consumed by handler and websocket code
-  - `Store` wraps the pgx pool; shutdown is already driven from `cmd/server/main.go`
-- internal/server/tree.go
-  - `Tree` is a package global server tree pointer
-  - runtime state lives in `ServerTree.base`, directory/file ext fields, and `fileHashes`
+2. internal/server/tree.go:46
+   var Tree *ServerTree
+   Current: Direct global, assigned in cmd/server/main.go:55
 
-Worker pattern comparison
-- internal/worker/downloader.go
-  - package-owned singleton uses `sync.Once` and `InitDownloader(...)`
-- internal/worker/reporter.go
-  - package-level singleton pointer plus `Run(...)` loop owns long-lived runtime state
-- internal/worker/worker.go
-  - bootstrap logic is centralized and called from `cmd/worker/main.go`
+3. internal/server/wsrpc.go:18
+   var upgrader = websocket.Upgrader{...}
+   Current: Immutable package config
 
-Server call-site evidence
-- `DB` consumers
-  - internal/server/handler.go:90,110,135,148,269
-  - internal/server/wsrpc.go:93,161,248,278
-- `Tree` consumers
-  - internal/server/handler.go:184,198,206,213,215,248,253,298,305,317,332
-  - internal/server/wsrpc.go:252
-- Bootstrap owner
-  - cmd/server/main.go initializes both `DB` and `Tree`
+Worker Package Globals (Reference):
+-----------------------------------
+1. internal/worker/config/config.go:28
+   var Global WorkerConfig
+   Pattern: Pattern 1 - Direct global (config struct)
 
-Disposition decisions
-- internal/server/db.go:66 `var DB *Store` -> align
-  - migrate to worker-style `InitDB`/`GetDB`
-  - keep `cmd/server/main.go` as the single bootstrap/shutdown owner
-- internal/server/tree.go:46 `var Tree *ServerTree` -> align
-  - migrate to worker-style `InitTree`/`GetTree`
-  - keep `cmd/server/main.go` as the single bootstrap owner
-- internal/server/wsrpc.go:18 `var upgrader = websocket.Upgrader{...}` -> exception
-  - immutable package config, not a mutable runtime owner
-- internal/server/wsrpc.go `Hub` -> exception
-  - constructor-owned runtime owner injected from `cmd/server/main.go`
-- internal/server/handler.go `Handler` -> exception
-  - constructor-owned adapter, no package state
+2. internal/worker/reporter.go:33
+   var Reporter *reporter
+   Pattern: Pattern 3 - Global with Run() loop
 
-Outcome
-- Ownership plan recorded in `.sisyphus/contract/ownership-map.md`
-- Raw server globals are now classified with one explicit disposition each
-- Guardrail established: no new shared backend package state outside worker-style ownership or documented immutable/constructor exceptions
+3. internal/worker/task.go:31
+   var iTree *mt.Tree[dirExt, fileExt]
+   Pattern: Pattern 3 - Global with LoadTree() init
 
-Verification
-- `lsp_diagnostics` on documentation files is not applicable
-- build not rerun for this task because no Go source was intentionally changed; baseline evidence from task 1 already records `go build ./...` timing out after 120s
+4. internal/worker/downloader.go:32-34
+   var (
+       downloaderInstance *Downloader
+       downloaderOnce     sync.Once
+   )
+   Pattern: Pattern 2 - sync.Once singleton
+
+═══════════════════════════════════════════════════════════════════
+PART 2: CONSUMER ANALYSIS
+═══════════════════════════════════════════════════════════════════
+
+DB *Store Consumers:
+--------------------
+- internal/server/handler.go:90   (AuthenticateWorker)
+- internal/server/handler.go:110  (RegisterWorker)
+- internal/server/handler.go:135  (UpdateWorkerConfig)
+- internal/server/handler.go:148  (ListWorkers)
+- internal/server/handler.go:269  (GetWorker)
+- internal/server/wsrpc.go:93     (AuthenticateWorker)
+- internal/server/wsrpc.go:161    (GetReclaimsByWorker)
+- internal/server/wsrpc.go:248    (UpsertItemStatus)
+- internal/server/wsrpc.go:278    (ScanAllItemStatusByWorker)
+
+Tree *ServerTree Consumers:
+---------------------------
+- internal/server/handler.go:184  (GetDirStats)
+- internal/server/handler.go:198  (Base().DirByPath)
+- internal/server/handler.go:206  (BuildTreeNodes)
+- internal/server/handler.go:213  (Base().Dirs[0].Path)
+- internal/server/handler.go:215  (Base().DirByPath)
+- internal/server/handler.go:248  (ChildDirStats)
+- internal/server/handler.go:253  (GetDirStats)
+- internal/server/handler.go:298  (Base().DirByPath)
+- internal/server/handler.go:305  (Base().Dirs[dirID])
+- internal/server/handler.go:317  (Base().Files[i])
+- internal/server/handler.go:332  (GetDirStats)
+- internal/server/wsrpc.go:252    (ApplyReport)
+
+═══════════════════════════════════════════════════════════════════
+PART 3: DISPOSITION DECISIONS
+═══════════════════════════════════════════════════════════════════
+
+┌──────────────┬─────────────┬─────────────┬────────────────────────────┐
+│ Global       │ Location    │ Disposition │ Target Pattern             │
+├──────────────┼─────────────┼─────────────┼────────────────────────────┤
+│ DB *Store    │ db.go:65    │ ALIGN       │ Pattern 2: InitDB/GetDB    │
+├──────────────┼─────────────┼─────────────┼────────────────────────────┤
+│ Tree         │ tree.go:46  │ ALIGN       │ Pattern 2: InitTree/GetTree│
+│ *ServerTree  │             │             │                            │
+├──────────────┼─────────────┼─────────────┼────────────────────────────┤
+│ upgrader     │ wsrpc.go:18 │ RETAIN      │ Pattern 1 (exception):     │
+│              │             │             │ Immutable config           │
+└──────────────┴─────────────┴─────────────┴────────────────────────────┘
+
+ALIGN Rationale:
+----------------
+DB and Tree are both:
+- Mutable runtime state with lifecycle
+- Single instance per process (true singletons)
+- Used across multiple handlers/functions
+- Need thread-safe initialization
+
+Worker-style Pattern 2 (sync.Once + Init/Get) is appropriate because:
+1. Matches existing worker/downloader.go pattern
+2. Provides thread-safe initialization
+3. Explicit lifecycle control
+4. Clear separation of concerns (Init for setup, Get for access)
+
+RETAIN Rationale:
+-----------------
+upgrader is:
+- Immutable configuration (websocket.Upgrader with no mutable fields)
+- Used as parameter only (no state changes)
+- No initialization/shutdown needed
+- Adding sync.Once would be unnecessary complexity
+
+═══════════════════════════════════════════════════════════════════
+PART 4: MIGRATION PATHS
+═══════════════════════════════════════════════════════════════════
+
+Path A: internal/server/db.go
+-----------------------------
+
+Current:
+    var DB *Store
+
+    // In cmd/server/main.go:
+    stree.DB, err = stree.NewStore(ctx, *dbURL)
+
+Target:
+    var (
+        dbInstance *Store
+        dbOnce     sync.Once
+    )
+    
+    func InitDB(connString string) *Store {
+        dbOnce.Do(func() {
+            pool, err := pgxpool.New(context.Background(), connString)
+            if err != nil {
+                log.Fatalf("db: failed to connect: %v", err)
+            }
+            dbInstance = &Store{pool: pool}
+        })
+        return dbInstance
+    }
+    
+    func GetDB() *Store {
+        return dbInstance
+    }
+
+Migration Steps:
+    1. Add sync.Once and dbInstance variables to db.go
+    2. Create InitDB() with sync.Once protection
+    3. Create GetDB() accessor
+    4. Update cmd/server/main.go to use InitDB()
+    5. Update all DB. references to GetDB().
+    6. Deprecate direct DB access (or keep for transition period)
+
+Path B: internal/server/tree.go
+-------------------------------
+
+Current:
+    var Tree *ServerTree
+
+    // In cmd/server/main.go:
+    stree.Tree = stree.NewTree(baseTree)
+
+Target:
+    var (
+        treeInstance *ServerTree
+        treeOnce     sync.Once
+    )
+    
+    func InitTree(base *mt.Tree[DirExt, FileExt]) *ServerTree {
+        treeOnce.Do(func() {
+            treeInstance = NewTree(base)
+        })
+        return treeInstance
+    }
+    
+    func GetTree() *ServerTree {
+        return treeInstance
+    }
+
+Migration Steps:
+    1. Add sync.Once and treeInstance variables to tree.go
+    2. Create InitTree() with sync.Once protection
+    3. Create GetTree() accessor
+    4. Update cmd/server/main.go to use InitTree()
+    5. Update all Tree. references to GetTree().
+    6. Keep NewTree() for testing flexibility
+
+═══════════════════════════════════════════════════════════════════
+PART 5: RULES FOR NEW CODE
+═══════════════════════════════════════════════════════════════════
+
+1. NO NEW RAW GLOBALS
+   - Every package-level var must have explicit disposition
+   - Document in ownership-map.md if adding new global
+
+2. MUTABLE STATE → PATTERN 2
+   - Use sync.Once + Init/Get
+   - Follow worker/downloader.go example
+
+3. IMMUTABLE CONFIG → PATTERN 1 + COMMENT
+   - Must add exception comment explaining why
+   - No mutable fields, no lifecycle
+
+4. REQUEST-SCOPED → CONSTRUCTOR INJECTION
+   - Use NewXxx() returning pointer
+   - Pass dependencies as parameters
+
+5. CALL SITES
+   - Inside package: may use instance directly
+   - Outside package: MUST use Get accessor
+   - Main: call Init, never assign directly
+
+═══════════════════════════════════════════════════════════════════
+PART 6: ARTIFACTS CREATED
+═══════════════════════════════════════════════════════════════════
+
+1. .sisyphus/contract/ownership-map.md
+   - Complete ownership map with all globals
+   - Migration paths documented
+   - Exception rationales included
+
+2. .sisyphus/contract/backend-style.md (updated)
+   - Added Ownership Rules section
+   - Added Server Package Patterns (Pattern 5, 6)
+   - Added New Code Requirements
+
+3. .sisyphus/evidence/task-5-global-ownership.txt (this file)
+   - Global inventory
+   - Consumer analysis
+   - Disposition decisions
+   - Migration paths
+
+4. .sisyphus/evidence/task-5-global-ownership-error.txt (companion file)
+   - No errors (planning task)
+   - Contains blocking task references
+
+═══════════════════════════════════════════════════════════════════
+PART 7: VERIFICATION
+═══════════════════════════════════════════════════════════════════
+
+✓ Every server global assigned explicit disposition
+✓ No ad hoc package state outside worker-style contract
+✓ Ownership path documented for migration
+✓ Rules established for new code
+✓ Artifacts created and committed
+
+Next Steps (for Task 6, 7, 8, 9, 10):
+- Task 6: Implement InitDB/GetDB migration
+- Task 7: Implement InitTree/GetTree migration
+- Task 8: Update all call sites in handler.go
+- Task 9: Update all call sites in wsrpc.go
+- Task 10: Update cmd/server/main.go
+
+═══════════════════════════════════════════════════════════════════
+END OF EVIDENCE
+═══════════════════════════════════════════════════════════════════

@@ -1,9 +1,12 @@
 {
-  "active_plan": "/mnt/c/Users/Lin/GolandProjects/myrient-horizon/.sisyphus/plans/backend-style-unification.md",
+  "active_plan": "/mnt/c/Users/Lin/GolandProjects/myrient-horizon-worktree/.sisyphus/plans/worker-fix-from-verifier.md",
   "started_at": "2026-03-07T06:38:05.717Z",
   "session_ids": [
-    "ses_3390eb11cffeVvgZt760sWpsEK"
+    "ses_3390eb11cffeVvgZt760sWpsEK",
+    "ses_3379ad772ffe9gHQrOIuar2zdk",
+    "ses_3379ad772ffe9gHQrOIuar2zdk"
   ],
-  "plan_name": "backend-style-unification",
-  "agent": "atlas"
+  "plan_name": "worker-fix-from-verifier",
+  "agent": "atlas",
+  "worktree_path": "/mnt/c/Users/Lin/GolandProjects/myrient-horizon-worktree"
 }

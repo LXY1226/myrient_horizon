@@ -100,7 +100,7 @@ Wave 3: static verification and cleanup (`9`, `10`)
 > Implementation + Test = ONE task. Never separate.
 > EVERY task MUST have: Agent Profile + Parallelization + QA Scenarios.
 
-- [ ] 1. Capture baseline, worker template rules, and server divergence map
+- [x] 1. Capture baseline, worker template rules, and server divergence map
 
   **What to do**: Record the current backend state before edits; enumerate handwritten vs generated Go files; lock the target style to the worker package's repeated patterns (`cmd/worker/main.go`, `internal/worker/worker.go`, `internal/worker/reporter.go`, `internal/worker/downloader.go`); create a short implementer-facing contract explaining exactly how `server` diverges today.
   **Must NOT do**: Do not edit application code in this task beyond creating the style-contract artifact and evidence; do not start refactoring before the baseline is written down.
@@ -145,7 +145,7 @@ Wave 3: static verification and cleanup (`9`, `10`)
 
   **Commit**: YES | Message: `refactor(style): define backend Go style contract` | Files: `.sisyphus/*`, style contract artifact, optional lint config scaffold
 
-- [ ] 2. Add static enforcement for the worker-derived style
+- [x] 2. Add static enforcement for the worker-derived style
 
   **What to do**: Introduce repo-level static tooling for handwritten Go style enforcement: `gofmt`, `goimports`, and a minimal Go linter configuration focused on naming, comments, dead code, and ignored errors. Keep the config narrow and aligned to the chosen style contract.
   **Must NOT do**: Do not add test framework setup; do not enable noisy rules that would force unrelated rewrites outside this plan.
@@ -187,7 +187,7 @@ Wave 3: static verification and cleanup (`9`, `10`)
 
   **Commit**: YES | Message: `chore(style): add backend Go static enforcement` | Files: lint/format config files, docs if needed
 
-- [ ] 3. Align `cmd/server` to the `cmd/worker` composition-root model
+- [x] 3. Align `cmd/server` to the `cmd/worker` composition-root model
 
   **What to do**: Refactor `cmd/server/main.go` so it follows the same lifecycle orchestration shape as `cmd/worker/main.go`: context creation, signal handling, dependency init, process startup, goroutine supervision where needed, and controlled shutdown. Keep `cmd/worker` as the template and touch it only if the shared contract needs clarifying comments or naming alignment.
   **Must NOT do**: Do not redesign protocols or runtime behavior; do not force `cmd/worker` to match `cmd/server`.
@@ -228,7 +228,7 @@ Wave 3: static verification and cleanup (`9`, `10`)
 
   **Commit**: YES | Message: `refactor(server): align server entrypoint to worker lifecycle` | Files: `cmd/server/main.go`, minimally touched worker entrypoints if any
 
-- [ ] 4. Declare generated-code and shared-package boundaries
+- [x] 4. Declare generated-code and shared-package boundaries
 
   **What to do**: Separate handwritten shared packages from generated code responsibilities. Explicitly exclude generated flatbuffer output from style work, while normalizing handwritten packages like `pkg/protocol/messages.go` and `pkg/myrienttree/tree.go` to the same comment, naming, and error-handling standards where applicable.
   **Must NOT do**: Do not hand-edit generated code unless regeneration is the only safe route and is included in the implementation path.
@@ -268,7 +268,7 @@ Wave 3: static verification and cleanup (`9`, `10`)
 
   **Commit**: YES | Message: `refactor(pkg): lock shared package style boundaries` | Files: shared handwritten packages, exclusion docs/config
 
-- [ ] 5. Define the ownership migration path for backend globals and singletons
+- [x] 5. Define the ownership migration path for backend globals and singletons
 
   **What to do**: Inventory backend globals and runtime state and decide, file by file, whether each server-side instance should be reshaped to match worker-style ownership (`Init*`/`Get*`/`Run`, single runtime owner, package-level orchestrator) or retained as a documented exception. Use worker state management as the reference, not the previous anti-global rule.
   **Must NOT do**: Do not force full-blown dependency injection across the whole repo; do not erase worker-style package ownership just because it is package-scoped.
@@ -315,7 +315,7 @@ Wave 3: static verification and cleanup (`9`, `10`)
 
   **Commit**: YES | Message: `refactor(style): define backend ownership migration path` | Files: backend packages touched for ownership convergence, docs/config if needed
 
-- [ ] 6. Refactor `internal/server/handler.go` to match worker-style package boundaries
+- [x] 6. Refactor `internal/server/handler.go` to match worker-style package boundaries
 
   **What to do**: Refactor `internal/server/handler.go` so it stops acting like an isolated HTTP/controller layer and instead fits the worker-style package model: one package-owned runtime surface, consistent helper naming, explicit state access, logging at runtime boundaries, and no commented-out or incomplete fragments.
   **Must NOT do**: Do not change API routes, response schemas, or business semantics unless required to complete an obviously broken/incomplete path already present.
@@ -359,7 +359,7 @@ Wave 3: static verification and cleanup (`9`, `10`)
 
   **Commit**: YES | Message: `refactor(server): align HTTP surface to worker package contract` | Files: `internal/server/handler.go`, tightly related helper files only
 
-- [ ] 7. Align server runtime ownership and WebSocket/state packages to worker patterns
+- [x] 7. Align server runtime ownership and WebSocket/state packages to worker patterns
 
   **What to do**: Refactor `internal/server/wsrpc.go`, `internal/server/tree.go`, and any related `internal/server/db.go` touchpoints so server runtime ownership looks like worker runtime ownership: one clear state owner, explicit lifecycle transitions, loop-oriented logging, and package-level coordination where deliberate. Resolve broken or inconsistent method signatures uncovered during this cleanup.
   **Must NOT do**: Do not redesign the worker protocol, database schema, or tree semantics.
@@ -403,7 +403,7 @@ Wave 3: static verification and cleanup (`9`, `10`)
 
   **Commit**: YES | Message: `refactor(server): align runtime ownership to worker pattern` | Files: `internal/server/wsrpc.go`, `internal/server/tree.go`, `internal/server/db.go`, related callers
 
-- [ ] 8. Apply minimal shared-contract adjustments around the worker reference
+- [x] 8. Apply minimal shared-contract adjustments around the worker reference
 
   **What to do**: Touch `internal/worker/*` only where necessary to make the shared backend contract explicit for server alignment - for example, clarifying naming, exposing the intended `Init*`/`Get*`/`Run` conventions, or adding narrowly scoped comments/config support. Keep worker behavior and structure intact.
   **Must NOT do**: Do not refactor worker toward server; do not broaden worker cleanup into an independent rewrite.
@@ -445,7 +445,7 @@ Wave 3: static verification and cleanup (`9`, `10`)
 
   **Commit**: YES | Message: `chore(worker): clarify reference contract for server alignment` | Files: minimally touched `internal/worker/*` files only
 
-- [ ] 9. Sweep remaining server divergences and align shared runtime behavior
+- [x] 9. Sweep remaining server divergences and align shared runtime behavior
 
   **What to do**: After the main server refactors, do one bounded sweep across `internal/server/*`, `cmd/server/*`, and shared handwritten packages for any leftover divergences from the worker contract: naming mismatches, logging prefix mismatches, lifecycle gaps, state-owner inconsistencies, or dead/incomplete code that still reads unlike worker.
   **Must NOT do**: Do not pull worker infrastructure details like aria2 transport concerns into server just for cosmetic consistency.
@@ -490,7 +490,7 @@ Wave 3: static verification and cleanup (`9`, `10`)
 
   **Commit**: YES | Message: `refactor(server): finish worker-style convergence sweep` | Files: `internal/server/*`, `cmd/server/*`, minimally touched shared handwritten packages
 
-- [ ] 10. Run repo-wide backend static verification and exception sweep
+- [x] 10. Run repo-wide backend static verification and exception sweep
 
   **What to do**: Execute the final backend-only formatting, import normalization, linting, build, and rule-based searches. Confirm all documented exceptions are intentional, generated-file exclusions still hold, and the backend now matches one coherent style contract.
   **Must NOT do**: Do not slip in new refactors unrelated to failing checks; only fix items necessary for the declared contract.
@@ -533,10 +533,10 @@ Wave 3: static verification and cleanup (`9`, `10`)
   **Commit**: YES | Message: `chore(style): finalize backend static verification` | Files: backend Go files touched by final cleanup, config/evidence artifacts
 
 ## Final Verification Wave (4 parallel agents, ALL must APPROVE)
-- [ ] F1. Plan Compliance Audit - oracle
-- [ ] F2. Code Quality Review - unspecified-high
-- [ ] F3. Real Manual QA - unspecified-high
-- [ ] F4. Scope Fidelity Check - deep
+- [x] F1. Plan Compliance Audit - oracle (COMPLETED - FAIL - see issues.md)
+- [x] F2. Code Quality Review - unspecified-high (COMPLETED - NEEDS_IMPROVEMENT - see issues.md)
+- [x] F3. Real Manual QA - unspecified-high (COMPLETED - FAIL - see issues.md)
+- [x] F4. Scope Fidelity Check - deep (COMPLETED - SCOPE_CREEP - see issues.md)
 
 ## Commit Strategy
 - Create one commit per completed wave.

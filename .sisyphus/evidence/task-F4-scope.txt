@@ -1,0 +1,101 @@
+# Task F4: Scope Verification Report
+## worker-fix-from-verifier Implementation
+
+### Date: 2026-03-07
+
+---
+
+## 1. EXPECTED SCOPE FILES
+
+Per plan, these files should be modified:
+- [x] `internal/worker/reporter.go`
+- [x] `internal/worker/verify.go`
+- [x] `internal/worker/downloader.go`
+- [x] `internal/worker/worker.go`
+- [x] `cmd/worker/main.go`
+- [x] `cmd/verifier/main.go`
+
+**Additional files within scope** (internal/worker/*):
+- [x] `internal/worker/config/config.go`
+- [x] `internal/worker/disk_windows.go`
+
+---
+
+## 2. OUT-OF-SCOPE MODIFICATIONS DETECTED
+
+### SERVER FILES (OUT OF SCOPE - Task F2 territory)
+- `cmd/server/main.go`
+- `cmd/server/server_linux.go`
+- `internal/server/db.go`
+- `internal/server/handler.go`
+- `internal/server/tree.go`
+- `internal/server/wsrpc.go`
+
+### OTHER FILES (OUT OF SCOPE)
+- `pkg/myrienttree/tree.go`
+- `pkg/protocol/messages.go` - Refactoring with new comments, changed error messages, added MessageHeartbeat, MessageStatusSyncRequest, MessageStatusSyncResponse
+
+---
+
+## 3. DEPENDENCY CHANGES
+
+### go.mod
+- **REMOVED**: `github.com/go4org/hashtriemap v0.0.0-20251130024219-545ba229f689`
+- **STATUS**: ✓ ACCEPTABLE - Dependency removal, not addition
+
+### go.sum
+- Updated to reflect removed dependency
+
+---
+
+## 4. PROTOCOL/API CONTRACT CHANGES
+
+### pkg/protocol/messages.go
+Changes detected:
+1. Added package documentation comment
+2. Changed `errors.New` to `fmt.Errorf` with wrapped errors
+3. Added new message type constants:
+   - `MessageHeartbeat = "heartbeat"`
+   - `MessageStatusSyncRequest = "status_sync_request"`
+   - `MessageStatusSyncResponse = "status_sync_response"`
+4. Added function documentation comments
+5. Changed error message format in `UnmarshalConnMessage`
+
+**VERDICT**: New message types suggest protocol extension. Impact assessment needed.
+
+---
+
+## 5. SCOPE CREEP SUMMARY
+
+| Category | Count | Status |
+|----------|-------|--------|
+| Expected files modified | 8 | ✓ In Scope |
+| Out-of-scope server files | 6 | ⚠️ Flagged |
+| Out-of-scope other files | 2 | ⚠️ Flagged |
+| New dependencies added | 0 | ✓ Clean |
+| Dependencies removed | 1 | ✓ Acceptable |
+| Protocol/API changes | Yes | ⚠️ Review Required |
+
+---
+
+## 6. RECOMMENDATIONS
+
+1. **Server file changes** appear to be from Task F2 (server-in-myriet-style) - verify these are not interfering
+2. **Protocol changes** add new message types that may be related to worker-verifier heartbeat/sync functionality - confirm this is intentional for F4
+3. **No new dependencies** - clean from dependency perspective
+4. **Dependency removal** is acceptable cleanup
+
+---
+
+## 7. CONCLUSION
+
+**SCOPE STATUS**: ⚠️ PARTIAL CREEP DETECTED
+
+- Core worker files modified as expected
+- Server-side changes present but may be from parallel Task F2
+- Protocol extensions added - verify necessity for worker-verifier communication
+- No blocking issues from dependency perspective
+
+Primary F4 scope is maintained. Server changes are orthogonal and should be verified against Task F2 boundaries.
+
+---

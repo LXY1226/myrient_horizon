@@ -1,0 +1,47 @@
+Task 3: Replace verifier-only function model with verifier runtime owner
+================================================================
+
+1. VERIFIER RUNTIME OWNER IMPLEMENTED
+--------------------------------------
+File: internal/worker/verify.go
+
+- Created `verifierRuntime` struct (unexported type)
+- Created package-global `Verifier *verifierRuntime` variable
+- Implemented `InitVerifier()` - no-return, fail-fast bootstrap
+  * Reads config.Global for validation
+  * Ensures Reporter is initialized (fatal if not)
+  * Seeds default concurrency of 2 (from old cmd/worker/main.go)
+  * Panics immediately on invalid state
+
+- Implemented required methods on verifierRuntime:
+  * `Run(ctx context.Context)` - runs worker pool with context cancellation
+  * `Submit(task *Task)` - queues task for verification
+  * `SetConcurrency(n int)` - updates concurrency limit
+  * `Count() int` - returns pending task count
+
+2. TASK.VERIFY() PRESERVED
+--------------------------
+- Task.Verify() still the core verification primitive
+- Routes verified hashes through Reporter.PushVerified
+- No reporting logic duplicated in commands
+
+3. COMMAND UPDATES
+------------------
+File: cmd/worker/main.go
+- Updated to use `worker.InitVerifier()` (no args, no return)
+- Uses `worker.Verifier.Run(ctx)` for the runtime
+- Uses `downloader := worker.InitDownloader(...)` for downloader
+
+4. BUILD VERIFICATION
+---------------------
+$ go build ./cmd/verifier ./cmd/worker
+- Both commands compile successfully
+- No errors
+
+5. FILES MODIFIED
+-----------------
+- internal/worker/verify.go (main implementation)
+- internal/worker/downloader.go (updated to use Verifier.Submit)
+- internal/worker/reporter.go (added InitReporter/GetReporter)
+- cmd/worker/main.go (updated calls)
+

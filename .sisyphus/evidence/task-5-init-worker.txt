@@ -1,0 +1,27 @@
+# Task 5: InitWorker Bootstrap
+
+## Outcome
+- Added `InitWorker(aria2Client *aria2.Client)` in `internal/worker/worker.go`.
+- Kept bootstrap fail-fast: invalid config, missing tree, nil aria2 client, or missing runtime globals now terminate immediately.
+- Documented and enforced init order: validate inputs, init reporter, init verifier, init downloader.
+- Set downloader bootstrap buffer inside worker bootstrap with the existing `1024` default used by `cmd/worker/main.go`.
+
+## Validation Rules Enforced
+- `config.Global.Key` must be non-empty.
+- `config.Global.ServerURL` must be non-empty.
+- `config.Global.TreeFile` must be non-empty.
+- `config.Global.DownloadDir` must be non-empty.
+- `config.Global.HeartBeatIntv` must be greater than zero.
+- Worker tree must already be loaded (`iTree != nil`).
+- aria2 client input must be non-nil.
+
+## Runtime Order
+1. `initReporter()`
+2. `InitVerifier()`
+3. `InitDownloader(aria2Client, 1024)`
+
+Each step is followed by a nil-state guard so bootstrap cannot continue with partial runtime state.
+
+## Verification
+- `gofmt -w internal/worker/worker.go`
+- `go build ./cmd/worker`

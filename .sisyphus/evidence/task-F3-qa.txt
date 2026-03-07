@@ -1,0 +1,39 @@
+Task F3 QA: Binary Fail-Fast Behavior Verification
+=====================================================
+Date: 2026-03-07
+Test: Fail-fast behavior of verifier and worker binaries
+
+1. BUILD TESTS
+--------------
+✅ Verifier binary: go build -o /tmp/verifier ./cmd/verifier
+   - Build successful (no errors)
+   - Binary location: /tmp/verifier
+
+✅ Worker binary: go build -o /tmp/worker ./cmd/worker
+   - Build successful (no errors)
+   - Binary location: /tmp/worker
+
+2. FAIL-FAST BEHAVIOR TESTS
+---------------------------
+✅ Verifier binary without config:
+   - Command: /tmp/verifier
+   - Exit code: 1 (FAIL)
+   - Output: "No registered worker.json found in /mnt/c/Users/Lin/GolandProjects/myrient-horizon-worktree; run the worker first to register, or create one manually."
+   - Behavior: FAIL-FAST CONFIRMED - Exits immediately with error message
+
+✅ Worker binary without config:
+   - Command: /tmp/worker
+   - Exit code: 1 (FAIL)
+   - Output: 
+     "Worker version: dev
+      No config found. A default worker.json has been created in /mnt/c/Users/Lin/GolandProjects/myrient-horizon-worktree; please edit it and restart."
+   - Behavior: FAIL-FAST CONFIRMED - Creates template config then exits with error
+
+3. CONCLUSION
+-------------
+Both binaries demonstrate proper fail-fast behavior:
+- They exit immediately (exit code 1) when configuration is missing/invalid
+- They provide clear error messages explaining the issue
+- Neither hangs or runs in a degraded state
+
+ALL TESTS PASSED ✅

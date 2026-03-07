@@ -1,41 +1,27 @@
-Backend Baseline Build Error Log
-================================
-Date: 2026-03-07
-Task: Task 1 - Capture baseline before refactoring
+# myrient-horizon/cmd/worker
+cmd/worker/main.go:38:24: undefined: worker.InitReporter
+cmd/worker/main.go:46:16: undefined: worker.GetReporter
+cmd/worker/main.go:64:21: undefined: worker.InitVerifier
+cmd/worker/main.go:74:20: too many arguments in call to downloader.Run
+	have (context.Context)
+	want ()
+cmd/worker/main.go:93:22: undefined: worker.GetDiskFreeGB
 
-BUILD OUTPUT
-------------
-Command: go build ./...
+=== ERROR SUMMARY ===
+Build errors: 5
 
-Result: TIMEOUT after 120 seconds
+=== BASELINE FINDINGS ===
 
-No explicit error messages were captured before timeout.
-The build command exceeded the 120 second timeout limit.
+Global Variables Found:
+  - internal/server/tree.go:46     var Tree *ServerTree
+  - internal/worker/verify.go:16   var verifyTaskCh = make(chan *Task, 16384)
+  - internal/worker/reporter.go:33 var Reporter *reporter
+  - internal/worker/task.go:31     var iTree *mt.Tree[dirExt, fileExt]
+  - internal/server/db.go:65       var DB *Store
 
-POTENTIAL CAUSES
-----------------
-1. External network dependencies (go mod download hanging)
-2. Infinite loop in init() function somewhere in codebase
-3. CGO compilation taking too long
-4. Resource contention on build machine
+Chinese Characters Found:
+  - internal/worker/task.go:13     // 全局文件索引
+  - internal/worker/task.go:14     // 本地路径（最终的绝对路径）
 
-RECOMMENDATION
---------------
-Run build with verbose output and shorter timeout to diagnose:
-    go build -v ./...
-
-Or check for init() loops:
-    grep -r "func init()" --include="*.go" .
-
-FILES WITH INIT FUNCTIONS
--------------------------
-(No explicit init functions found in scanned files)
-
-DEPENDENCIES
-------------
-Key external dependencies identified:
-- github.com/gorilla/websocket
-- github.com/jackc/pgx/v5/pgxpool
-- github.com/go4org/hashtriemap
-- github.com/google/flatbuffers/go
-- golang.org/x/crypto/bcrypt
+Generated Files Excluded (verified):
+  - pkg/myrienttree/MyrientTree/Node.go (FlatBuffers generated)

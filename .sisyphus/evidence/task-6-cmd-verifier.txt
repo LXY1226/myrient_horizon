@@ -1,0 +1,74 @@
+# Task 6: Update Standalone Verifier Command
+
+## Evidence File
+
+### Bootstrap Sequence Implementation
+
+The verifier command now follows the new bootstrap contract:
+
+1. **Load config** (lines 30-32):
+   ```go
+   cfg, err := config.Load(workDir)
+   if err != nil {
+       log.Fatalf("Failed to load config: %v", err)
+   }
+   ```
+
+2. **Assign config.Global** (line 37):
+   ```go
+   config.Global = *cfg
+   ```
+
+3. **Load tree** (line 60):
+   ```go
+   worker.LoadTree(cfg.TreeFile)
+   ```
+
+4. **Init reporter** (lines 41-44):
+   ```go
+   if _, err := worker.InitReporter(cfg.ServerURL, cfg.Key, protocol.Version); err != nil {
+       log.Fatalf("Failed to initialize reporter: %v", err)
+   }
+   ```
+
+5. **Init verifier** (line 44):
+   ```go
+   worker.InitVerifier()
+   ```
+
+6. **Start reporter in goroutine** (lines 62-63):
+   ```go
+   // Start reporter in goroutine (non-blocking)
+   go worker.Reporter.Run(cfg.ServerURL+"/ws", cfg.Key)
+   ```
+
+7. **Run verification walk** (lines 73-111):
+   - Directory walk with `filepath.Walk`
+   - File matching with `worker.MatchTaskByPath`
+   - Verification with `task.Verify()`
+   - Bad report logging to `bad_report.log`
+
+8. **Graceful shutdown** (lines 117-120):
+   ```go
+   wg := worker.Reporter.Close()
+   bw.Flush()
+   badReport.Close()
+   wg.Wait()
+   ```
+
+### Key Changes
+
+- Added `worker.InitReporter()` call before `worker.InitVerifier()`
+- Added `worker.InitVerifier()` call before any verification work
+- Changed `worker.Reporter.Run()` from synchronous to goroutine: `go worker.Reporter.Run(...)`
+- Added import for `"myrient-horizon/pkg/protocol"` to access `protocol.Version`
+- Preserved all existing behavior: directory walk, bad-report logging, graceful close/wait
+
+### Build Verification
+
+```
+$ go build ./cmd/verifier
+(no errors)
+```
+
+The verifier compiles successfully with the new bootstrap contract.

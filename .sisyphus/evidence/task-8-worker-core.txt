@@ -1,0 +1,29 @@
+
+=== Git Diff Summary ===
+ .sisyphus/boulder.json                           |  11 +-
+ .sisyphus/contract/backend-style.md              | 164 ++++++++++--
+ .sisyphus/contract/ownership-map.md              | 220 +++++++++++-----
+ .sisyphus/evidence/task-1-baseline-error.txt     |  68 ++---
+ .sisyphus/evidence/task-1-baseline.txt           | 116 +--------
+ .sisyphus/evidence/task-2-static-enforcement.txt | 116 ++++-----
+ .sisyphus/evidence/task-3-cmd-roots.txt          | 111 ++++----
+ .sisyphus/evidence/task-4-shared-boundaries.txt  |  63 +++++
+ .sisyphus/evidence/task-5-global-ownership.txt   | 317 ++++++++++++++++++-----
+ .sisyphus/evidence/task-6-server-handler.txt     |  40 +--
+ .sisyphus/evidence/task-7-server-state.txt       |  28 +-
+ .sisyphus/plans/backend-style-unification.md     |  14 +-
+ cmd/server/main.go                               |  63 +++--
+ cmd/worker/main.go                               |   4 +-
+ internal/server/db.go                            |  39 ++-
+ internal/server/handler.go                       |  32 +--
+ internal/server/tree.go                          |  27 +-
+ internal/server/wsrpc.go                         |  68 ++---
+ internal/worker/config/config.go                 |   4 +
+ internal/worker/disk_windows.go                  |   4 +-
+ internal/worker/downloader.go                    |  20 +-
+ internal/worker/reporter.go                      |  69 ++++-
+ internal/worker/verify.go                        |  72 +++++
+ pkg/myrienttree/tree.go                          |  17 +-
+ pkg/protocol/messages.go                         |  22 +-
+ server                                           | Bin 15450700 -> 15450704 bytes
+ 26 files changed, 1146 insertions(+), 563 deletions(-)

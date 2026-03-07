@@ -166,36 +166,164 @@ To bring `server` package in line with `worker` patterns:
 
 ## Build Evidence
 
-Captured: 2026-03-07
+**Captured**: 2026-03-07
+
+**Status**: BROKEN (5 compilation errors in cmd/worker/main.go)
 
 ```
-Build status: TIMEOUT (120s)
-Likely cause: External dependencies or infinite loop in init
+# myrient-horizon/cmd/worker
+cmd/worker/main.go:38:24: undefined: worker.InitReporter
+cmd/worker/main.go:46:16: undefined: worker.GetReporter
+cmd/worker/main.go:64:21: undefined: worker.InitVerifier
+cmd/worker/main.go:74:20: too many arguments in call to downloader.Run
+	have (context.Context)
+	want ()
+cmd/worker/main.go:93:22: undefined: worker.GetDiskFreeGB
 ```
 
-## Pattern Violations Found
+**Required Fixes (blocking Tasks 2-10):**
+1. Implement `worker.InitReporter()` function
+2. Implement `worker.GetReporter()` function
+3. Implement `worker.InitVerifier()` function
+4. Fix `downloader.Run()` signature to accept context
+5. Implement `worker.GetDiskFreeGB()` function
+
+## Pattern Violations Found (Current Baseline)
 
 ### Global Pointer Variables
-- `internal/worker/reporter.go:28` - `var Reporter *reporter`
+- `internal/worker/verify.go:16` - `var verifyTaskCh = make(chan *Task, 16384)`
+- `internal/worker/reporter.go:33` - `var Reporter *reporter`
 - `internal/worker/task.go:31` - `var iTree *mt.Tree[dirExt, fileExt]`
 - `internal/server/tree.go:46` - `var Tree *ServerTree`
-- `internal/server/db.go:66` - `var DB *Store`
+- `internal/server/db.go:65` - `var DB *Store`
+
+### Channel Globals
+- `internal/worker/downloader.go:13` - `var badVerifyTaskCh = make(chan Task, 16384)`
+- `internal/worker/downloader.go:14` - `var downloadTaskCh = make(chan Task, 16)`
+- `internal/worker/downloader.go:15` - `var downloadTaskReplaced = make(chan struct{})`
 
 ### Chinese Comments
-- `internal/worker/downloader.go:20-29` - Block comment
-- `internal/worker/task.go:13-14` - Inline comments
+- `internal/worker/task.go:13` - `// 全局文件索引`
+- `internal/worker/task.go:14` - `// 本地路径（最终的绝对路径）`
 
-### Dead Code
-- `cmd/verifier/main.go:95` - Commented code
-- `internal/worker/task.go:63-84` - Commented function
-- `internal/worker/downloader.go:78-118` - Entire Run() body commented
-- `internal/worker/downloader.go:152-158` - Commented function
-- `internal/server/handler.go:28-36` - Commented CORS code
-- `internal/server/handler.go:45-46` - Commented latency logging
-- `internal/server/wsrpc.go:26-30` - Commented fields
-- `internal/server/wsrpc.go:127` - Commented cancel field (build error)
+### Dead Code / Large Comment Blocks
+- `internal/worker/downloader.go:19-30` - Worker workflow TODO block (12 lines)
+- `internal/worker/downloader.go:91-132` - Entire Run() implementation commented (42 lines)
+- `internal/worker/downloader.go:164-171` - Commented failInFlight function (8 lines)
+- `internal/server/handler.go:28-36` - Commented CORS headers (9 lines)
+- `internal/server/handler.go:38-46` - Commented latency logging (9 lines)
+- `internal/server/handler.go:59` - Comment about deprecated endpoints
+
+### Inconsistent Message Type Constants
+- `internal/server/wsrpc.go:228` - Hardcoded `"heartbeat"` instead of `protocol.MessageHeartbeat`
+- `internal/server/wsrpc.go:230` - Hardcoded `"status_sync_request"` instead of constant
+- `internal/server/wsrpc.go:321` - Hardcoded `"status_sync_response"` instead of constant
+
+## Verification Checklist
+
+- [x] Generated files identified: `pkg/myrienttree/MyrientTree/Node.go`
+- [x] Global variables catalogued: 9 locations across 5 files
+- [x] Chinese characters found: 2 locations in `internal/worker/task.go`
+- [x] Large comment blocks found: 6 locations
+- [x] Worker patterns documented
+- [x] Server divergence mapped
+- [x] Build errors captured and enumerated
 
 ## References
 
 - Effective Go: https://go.dev/doc/effective_go
 - Google Go Style: https://google.github.io/styleguide/go/decisions
+
+## Ownership Rules (Added by Task 5)
+
+### Global Variable Dispositions
+
+All package-level globals in `internal/server/` have been assigned explicit dispositions:
+
+| Global | File | Disposition | Target Pattern |
+|--------|------|-------------|----------------|
+| `DB *Store` | `db.go:65` | **ALIGN** | Pattern 2: `InitDB()` / `GetDB()` |
+| `Tree *ServerTree` | `tree.go:46` | **ALIGN** | Pattern 2: `InitTree()` / `GetTree()` |
+| `upgrader` | `wsrpc.go:18` | **RETAIN** | Pattern 1 (immutable config exception) |
+
+### Server Package Patterns
+
+Based on worker patterns, server globals fall into two categories:
+
+#### Pattern 5: Server Singleton Pattern
+
+For server-side singletons with lifecycle:
+
+```go
+var (
+    instance *ServerComponent
+    once     sync.Once
+)
+
+// InitServerComponent initializes the singleton. Called once from main.
+func InitServerComponent(args) *ServerComponent {
+    once.Do(func() {
+        instance = &ServerComponent{...}
+    })
+    return instance
+}
+
+// GetServerComponent returns the singleton. Safe for concurrent use.
+func GetServerComponent() *ServerComponent {
+    return instance
+}
+```
+
+**Applies to:** `DB`, `Tree`
+
+#### Pattern 6: Immutable Config Exception
+
+For immutable package-level configuration with no mutable state:
+
+```go
+// upgrader is package-level configuration (immutable).
+// Exception to Init/Get pattern: no mutable state, no lifecycle.
+var upgrader = websocket.Upgrader{...}
+```
+
+**Applies to:** `upgrader`
+
+**Requirements for exception:**
+1. No mutable fields (all fields are const-equivalent after init)
+2. No lifecycle (no Init/Shutdown needed)
+3. Used as configuration, not state
+4. Documented with exception comment
+
+### Call Site Rules
+
+**Inside owning package:**
+- May use internal instance directly: `instance.DoSomething()`
+- Only for package-internal code
+
+**Outside owning package:**
+- MUST use Get accessor: `server.GetDB().DoSomething()`
+- Never access global variable directly
+
+**Main package (initialization):**
+- Call Init function: `server.InitDB(connString)`
+- Never assign to global directly: `server.DB = ...` (FORBIDDEN)
+
+### New Code Requirements
+
+1. **No new raw globals** - Every package-level variable must have explicit disposition
+2. **Mutable state MUST use Pattern 5** (Init/Get with sync.Once)
+3. **Immutable config MAY use Pattern 6** with documented exception rationale
+4. **Request-scoped state MUST use constructor injection** (Pattern 4)
+5. **Add to ownership map** when creating new globals
+
+### Migration Status
+
+- [ ] `db.go`: Migrated to `InitDB()` / `GetDB()`
+- [ ] `tree.go`: Migrated to `InitTree()` / `GetTree()`
+- [x] Ownership map documented in `ownership-map.md`
+- [x] Disposition rules added to contract
+
+### References
+
+- Ownership Map: `.sisyphus/contract/ownership-map.md`
+- Task 5 Evidence: `.sisyphus/evidence/task-5-global-ownership.txt`

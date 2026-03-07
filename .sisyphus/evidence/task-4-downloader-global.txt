@@ -1,0 +1,42 @@
+# Task 4: Downloader Global Owner
+
+## Changes Summary
+- Removed sync.Once pattern from internal/worker/downloader.go
+- Removed GetDownloader() function
+- Changed InitDownloader to return nothing (void)
+- Created package-global Downloader variable
+- Updated cmd/worker/main.go to use worker.Downloader directly
+- Updated internal/worker/reporter.go to use Downloader instead of GetDownloader()
+
+## Pattern Change
+
+### Before (sync.Once singleton):
+```go
+var (
+    downloaderInstance *Downloader
+    downloaderOnce     sync.Once
+)
+
+func InitDownloader(client *aria2.Client, taskBufSize int) *Downloader {
+    downloaderOnce.Do(func() {
+        downloaderInstance = &Downloader{...}
+    })
+    return downloaderInstance
+}
+
+func GetDownloader() *Downloader {
+    return downloaderInstance
+}
+```
+
+### After (Direct global):
+```go
+var Downloader *downloader
+
+func InitDownloader(client *aria2.Client, taskBufSize int) {
+    Downloader = &downloader{...}
+}
+```
+
+## Build Status
+✓ Worker compiles successfully

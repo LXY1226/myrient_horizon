@@ -1,0 +1,74 @@
+# Task 2: Static Enforcement Errors
+# Generated: 2026-03-07
+
+## go vet Output
+
+```
+# myrient-horizon/cmd/worker
+# [myrient-horizon/cmd/worker]
+vet: cmd/worker/main.go:38:24: undefined: worker.InitReporter
+
+# myrient-horizon/cmd/server
+cmd/server/server_linux.go:10:33: net.UnixAddr struct literal uses unkeyed fields
+```
+
+## golangci-lint Output
+
+```
+cmd/server/main.go:1:1: package requires newer Go version go1.25 (application built with go1.24) (typecheck)
+package main
+^
+cmd/verifier/main.go:1:1: package requires newer Go version go1.25 (application built with go1.24) (typecheck)
+package main
+^
+cmd/worker/main.go:1: : # myrient-horizon/cmd/worker
+cmd/worker/main.go:38:24: undefined: worker.InitReporter
+cmd/worker/main.go:46:16: undefined: worker.GetReporter
+cmd/worker/main.go:64:21: undefined: worker.InitVerifier
+cmd/worker/main.go:74:20: too many arguments in call to downloader.Run
+	have (context.Context)
+	want ()
+cmd/worker/main.go:93:22: undefined: worker.GetDiskFreeGB (typecheck)
+package main
+internal/server/db.go:1:1: package requires newer Go version go1.25 (application built with go1.24) (typecheck)
+package server
+^
+internal/worker/aria2/aria2.go:1:1: package requires newer Go version go1.25 (application built with go1.24) (typecheck)
+package aria2
+^
+internal/worker/config/config.go:1:1: package requires newer Go version go1.25 (application built with go1.24) (typecheck)
+package config
+^
+internal/worker/downloader.go:1:1: package requires newer Go version go1.25 (application built with go1.24) (typecheck)
+package worker
+^
+pkg/myrienttree/MyrientTree/Node.go:3:1: package requires newer Go version go1.25 (application built with go1.24) (typecheck)
+package MyrientTree
+^
+pkg/myrienttree/tree.go:1:1: package requires newer Go version go1.25 (application built with go1.24) (typecheck)
+package myrienttree
+^
+pkg/protocol/messages.go:1:1: package requires newer Go version go1.25 (application built with go1.24) (typecheck)
+package protocol
+^
+```
+
+## Error Analysis
+
+### Build Errors (from contract baseline)
+These are expected per Task 1 baseline:
+1. `worker.InitReporter` undefined
+2. `worker.GetReporter` undefined
+3. `worker.InitVerifier` undefined
+4. `downloader.Run()` signature mismatch
+5. `worker.GetDiskFreeGB` undefined
+
+### Tool Limitations
+- golangci-lint v1.64.8 built with Go 1.24
+- Project go.mod specifies go 1.25.2
+- This causes "package requires newer Go version" errors
+- Linting rules still apply; errors will resolve when golangci-lint updates
+
+### Style Violations Detected
+- `cmd/server/server_linux.go:10:33`: net.UnixAddr struct literal uses unkeyed fields
+  - Suggestion: Use keyed fields for clarity: `net.UnixAddr{Name: "...", Net: "..."}`

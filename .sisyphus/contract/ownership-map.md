@@ -1,62 +1,158 @@
-# Backend Ownership Map
+# Backend Global Ownership Map
 
-Date: 2026-03-07
-Scope: `cmd/server/*.go`, `internal/server/*.go`
+## Purpose
 
-## Ownership Contract
+This document defines the disposition for every global variable and runtime state owner in the backend (`internal/server/` and `internal/worker/`). It establishes the migration path from current state to worker-style ownership patterns.
 
-- Server-wide mutable runtime state must have one package owner.
-- Shared package-owned runtime state must follow the worker singleton shape: `Init*`, `Get*`, optional `Run`, and one bootstrap owner in `cmd/server/main.go`.
-- Constructor-owned request/runtime objects may remain non-singletons when they are already passed explicitly and are not exposed as package globals.
-- Immutable package-level configuration values are allowed as documented exceptions.
-- No new backend package state should be introduced outside these two buckets.
+## Worker-Style Ownership Patterns (Reference)
 
-## File Map
+| Pattern | Description | Example |
+|---------|-------------|---------|
+| **Pattern 1: Direct Global** | Simple config struct, no initialization needed | `config.Global WorkerConfig` |
+| **Pattern 2: sync.Once Singleton** | Thread-safe singleton with explicit Init/Get | `downloader.InitDownloader()` / `GetDownloader()` |
+| **Pattern 3: Global with Init Function** | Explicit initialization before use | `LoadTree()` initializes `iTree` |
+| **Pattern 4: Constructor-Owned** | Created in main, passed to dependents | `NewHub()` returns `*Hub` |
 
-| File | Current owner/state | Disposition | Target path |
-|------|---------------------|-------------|-------------|
-| `internal/server/db.go` | `var DB *Store` owns shared PostgreSQL pool and all store methods | align | Replace raw global with `InitDB(ctx, dsn)` + `GetDB()`, keep `cmd/server/main.go` as bootstrap owner, keep `Store.Close()` as shutdown hook |
-| `internal/server/tree.go` | `var Tree *ServerTree` owns in-memory aggregate stats and per-file hash state | align | Replace raw global with `InitTree(base)` + `GetTree()`, keep `cmd/server/main.go` as bootstrap owner, keep mutation behind `ServerTree` methods |
-| `internal/server/wsrpc.go` | `var upgrader = websocket.Upgrader{...}` | exception | Retain as immutable package config; it is not a runtime owner and does not need worker-style lifecycle hooks |
-| `internal/server/wsrpc.go` | `Hub` owns live worker connections, version gate settings, and websocket fanout | exception | Retain constructor ownership via `NewHub()`; single process owner stays in `cmd/server/main.go` and is injected into `Handler` |
-| `internal/server/handler.go` | `Handler` holds only `hub *Hub` | exception | Retain constructor ownership via `New(hub)`; no package state |
-| `cmd/server/main.go` | bootstrap sequence owns init order for tree, DB, hub, handler, and `http.Server` | exception | Retain as package-level orchestrator; after DB/Tree alignment it remains the only runtime bootstrap owner |
+## Server Package Inventory
 
-## Decisions By Current Global
+| Global | Location | Current Pattern | Disposition | Target Pattern | Rationale |
+|--------|----------|-----------------|-------------|----------------|-----------|
+| `DB *Store` | `db.go:65` | Direct global, assigned in main | **ALIGN** | Pattern 2: `InitDB()` / `GetDB()` | Database is connection-pooled singleton, fits sync.Once model |
+| `Tree *ServerTree` | `tree.go:46` | Direct global, assigned in main | **ALIGN** | Pattern 2: `InitTree()` / `GetTree()` | ServerTree is singleton with lifecycle, fits sync.Once model |
+| `upgrader` | `wsrpc.go:18` | Package var with literal | **RETAIN** | Pattern 1 (immutable config) | Immutable websocket configuration, no state |
 
-### `internal/server/db.go:66` - `var DB *Store`
+## Worker Package Inventory (Reference)
 
-- Disposition: align
-- Why: process-wide mutable owner, read from handlers and websocket paths, same shape as worker singleton candidates
-- Required migration:
-  - add `sync.Once`-guarded `InitDB`
-  - add `GetDB` accessor for all server package callers
-  - move all direct `DB.` call sites to `GetDB().`
-  - keep shutdown in `cmd/server/main.go` by closing the initialized store
+| Global | Location | Current Pattern | Status |
+|--------|----------|-----------------|--------|
+| `Global WorkerConfig` | `config/config.go:28` | Direct global | ✅ Follows Pattern 1 |
+| `Reporter *reporter` | `reporter.go:33` | Direct global, needs Init | ⚠️ Needs Pattern 2 alignment |
+| `iTree *Tree` | `task.go:31` | Global with `LoadTree()` | ✅ Follows Pattern 3 |
+| `downloaderInstance` | `downloader.go:33` | sync.Once singleton | ✅ Follows Pattern 2 |
 
-### `internal/server/tree.go:46` - `var Tree *ServerTree`
+## Migration Paths
 
-- Disposition: align
-- Why: process-wide mutable owner for in-memory status aggregation and websocket report application
-- Required migration:
-  - add `sync.Once`-guarded `InitTree`
-  - add `GetTree` accessor for all server package callers
-  - move all direct `Tree.` call sites to `GetTree().`
-  - keep all mutation inside `ServerTree` methods; callers only bootstrap or query
+### Path 1: `internal/server/db.go`
 
-## Server Runtime State Inventory
+**Current State:**
+```go
+var DB *Store  // Line 65
 
-| File | State | Owner after migration |
-|------|-------|-----------------------|
-| `internal/server/db.go` | `Store.pool` | `DB` singleton owned by `InitDB`/`GetDB` |
-| `internal/server/tree.go` | `ServerTree.base`, `ServerTree.fileHashes`, directory/file ext stats | `Tree` singleton owned by `InitTree`/`GetTree` |
-| `internal/server/wsrpc.go` | `Hub.conns`, version metadata | `Hub` instance created in `cmd/server/main.go` |
-| `internal/server/handler.go` | `Handler.hub` reference only | `Handler` instance created in `cmd/server/main.go` |
-| `cmd/server/main.go` | `http.Server`, signal/shutdown context | `main` bootstrap/orchestrator |
+// In cmd/server/main.go:
+stree.DB, err = stree.NewStore(ctx, *dbURL)  // Line 47
+```
 
-## Guardrails For Later Tasks
+**Target State:**
+```go
+var (
+    dbInstance *Store
+    dbOnce     sync.Once
+)
 
-- New shared mutable server state must either be attached to an existing owner (`Store`, `ServerTree`, `Hub`) or introduced behind a worker-style `Init*`/`Get*` contract.
-- Do not add new package globals in `internal/server/*.go` unless they are immutable config exceptions like `upgrader`.
-- Prefer constructor injection for request-scoped helpers and per-connection state.
-- The next server ownership refactor should update `internal/server/db.go`, `internal/server/tree.go`, `internal/server/handler.go`, `internal/server/wsrpc.go`, and `cmd/server/main.go` together so call sites move atomically.
+func InitDB(connString string) *Store {
+    dbOnce.Do(func() {
+        pool, err := pgxpool.New(context.Background(), connString)
+        if err != nil {
+            log.Fatalf("db: failed to connect: %v", err)
+        }
+        dbInstance = &Store{pool: pool}
+    })
+    return dbInstance
+}
+
+func GetDB() *Store {
+    return dbInstance
+}
+```
+
+**Migration Steps:**
+1. Add `sync.Once` and `dbInstance` variables
+2. Create `InitDB()` function with `sync.Once`
+3. Create `GetDB()` accessor
+4. Deprecate `NewStore()` or make it internal
+5. Update `cmd/server/main.go` to call `InitDB()` instead of direct assignment
+6. Update all `DB.` references to `GetDB().`
+
+### Path 2: `internal/server/tree.go`
+
+**Current State:**
+```go
+var Tree *ServerTree  // Line 46
+
+// In cmd/server/main.go:
+stree.Tree = stree.NewTree(baseTree)  // Line 55
+```
+
+**Target State:**
+```go
+var (
+    treeInstance *ServerTree
+    treeOnce     sync.Once
+)
+
+func InitTree(base *mt.Tree[DirExt, FileExt]) *ServerTree {
+    treeOnce.Do(func() {
+        treeInstance = NewTree(base)
+    })
+    return treeInstance
+}
+
+func GetTree() *ServerTree {
+    return treeInstance
+}
+```
+
+**Migration Steps:**
+1. Add `sync.Once` and `treeInstance` variables
+2. Create `InitTree()` function with `sync.Once`
+3. Create `GetTree()` accessor
+4. Keep `NewTree()` for custom creation (testing)
+5. Update `cmd/server/main.go` to call `InitTree()` instead of direct assignment
+6. Update all `Tree.` references to `GetTree().`
+
+## Documented Exceptions
+
+### Exception 1: `wsrpc.go:upgrader`
+
+**Rationale for Retention:**
+- Immutable configuration struct with no mutable state
+- Used only as parameter to `websocket.Upgrade()`
+- No lifecycle concerns (no initialization, shutdown)
+- Changing to sync.Once adds complexity without benefit
+
+**Documented As:**
+```go
+// upgrader is package-level configuration (immutable).
+// Exception to Init/Get pattern: no mutable state, no lifecycle.
+var upgrader = websocket.Upgrader{...}
+```
+
+## Ownership Rules
+
+### New Code Guidelines
+
+1. **Package-level mutable state MUST use Pattern 2** (sync.Once + Init/Get)
+2. **Package-level immutable config MAY use Pattern 1** (direct global with comment)
+3. **Request-scoped state MUST use Pattern 4** (constructor injection)
+4. **No new raw globals** without explicit disposition in this document
+
+### Call Site Guidelines
+
+1. **Inside package:** May use internal global directly (e.g., `dbInstance`)
+2. **Outside package:** MUST use Get accessor (e.g., `GetDB()`)
+3. **Initialization:** Main package calls Init, never assigns to globals directly
+
+## Verification Checklist
+
+- [x] All server globals inventoried
+- [x] All worker patterns documented (reference)
+- [x] Disposition assigned to each global (ALIGN / RETAIN / REMOVE)
+- [x] Migration path documented for ALIGN globals
+- [x] Exceptions documented with rationale
+- [x] Rules established for new code
+
+## References
+
+- Task: Task 5 - Global Ownership Migration
+- Contract: `.sisyphus/contract/backend-style.md`
+- Evidence: `.sisyphus/evidence/task-5-global-ownership.txt`

@@ -1,56 +1,67 @@
-Task 3: Align cmd/server to cmd/worker composition-root model
-================================================================
+Task 3: Align cmd/server/main.go to worker lifecycle pattern
+===========================================================
 
 Date: 2025-03-07
 Status: COMPLETED
 
-Changes Made to cmd/server/main.go:
-------------------------------------
+Changes Applied:
+---------------
 
-1. Signal Handling Pattern (lines 28-33):
-   - Moved signal handler to a goroutine immediately after context creation
-   - Signal handler now calls cancel() to trigger context cancellation
-   - Matches worker pattern (worker lines 26-32)
+1. Simplified signal handling (line 29-35):
+   - Changed to single buffered signal channel (buffer size 1)
+   - One goroutine that logs once and calls cancel()
+   - Removed multi-signal escalation logic
 
-2. Blocking Pattern (line 94):
-   - Changed final blocking from `<-sigCh` to `<-ctx.Done()`
-   - Matches worker pattern (worker line 105)
-   - Graceful shutdown happens AFTER context cancellation
+2. Reordered initialization - all sync deps before any goroutines:
+   - Parse flags (line 17-24)
+   - Create ctx/cancel (line 26-27)
+   - Install signal handler (line 29-35)
+   - Load tree (line 37-43)
+   - Connect DB (line 45-52)
+   - Build stree.Tree (line 54-58)
+   - Create/configure hub with WorkerVersion, WorkerDownloadURL, WorkerSHA256 BEFORE starting hub.Run (line 60-68)
+   - Build handlers (line 70-72)
+   - Create http.Server (line 73-79)
+   - Create listener synchronously (line 81-86)
+   - THEN start goroutines (line 90-96)
 
-3. Graceful Shutdown (lines 97-101):
-   - Moved server.Shutdown() to run after <-ctx.Done()
-   - Maintains 10-second timeout for shutdown
-   - Clean separation: signal -> cancel -> wait -> shutdown
+3. Moved listener creation synchronous (line 81-86):
+   - getListener(*addr) happens BEFORE go server.ServeTLS(...)
+   - Startup failures happen before background work
 
-Lifecycle Comparison:
----------------------
-WORKER (template):                    SERVER (aligned):
-------------------                    -----------------
-1. Version log                        1. Flag parsing
-2. Context + cancel                   2. Context + cancel  
-3. Signal goroutine -> cancel         3. Signal goroutine -> cancel (NEW)
-4. Config load                        4. Tree loading
-5. Dependency init                    5. DB connection
-6. Goroutine startup                  6. Tree build
-7. Heartbeat ticker                   7. Hub setup
-8. <-ctx.Done()                       8. HTTP server startup
-9. Cleanup + exit                     9. <-ctx.Done() (NEW)
-                                      10. Graceful shutdown
+4. Cluster goroutine startup (line 90-96):
+   - Start hub.Run(ctx) and server.ServeTLS in adjacent goroutines
+   - Clear startup structure
+
+5. Fixed serve error handling (line 92-96, 101-104):
+   - Replaced log.Fatalf inside serve goroutine
+   - Send error to buffered errCh
+   - Main select on ctx.Done() or errCh
+   - On serve error, log it and cancel() for single shutdown path
+
+6. Simplified shutdown orchestration (line 98-113):
+   - After <-ctx.Done() or errCh, create 10s shutdown context
+   - Call server.Shutdown(shutdownCtx)
+   - Removed extra trailing cancel()
+   - Single shutdown tail with final wait point and terminal log
+
+7. Fixed race condition (line 62-64, 91):
+   - Set hub fields (WorkerVersion, WorkerDownloadURL, WorkerSHA256) BEFORE go hub.Run(ctx)
 
 Build Verification:
--------------------
-$ go build ./cmd/server
-$ go build ./cmd/worker
+------------------
+- cmd/server: COMPILES SUCCESSFULLY
+- cmd/verifier: COMPILES SUCCESSFULLY
+- cmd/worker: PRE-EXISTING ERRORS (undefined functions - not related to this task)
 
-Note: Build shows pre-existing errors in internal/server/* files (handler.go, 
-tree.go, wsrpc.go) unrelated to cmd/server/main.go changes. The main.go file
-parses and compiles correctly.
-
-Key Alignment Points:
----------------------
-✓ Context with cancel at top level
-✓ Signal handler goroutine that calls cancel()
-✓ <-ctx.Done() as final blocking call
-✓ Controlled shutdown sequence
-✓ Long-running components (HTTP server) in goroutines
-✓ Defer cleanup for resources
+Pattern Alignment:
+-----------------
+The server now follows the same lifecycle orchestration shape as the worker:
+1. Flag parsing
+2. Context creation
+3. Signal handler installation
+4. Synchronous dependency initialization
+5. Synchronous resource creation (listener)
+6. Goroutine startup
+7. Wait on ctx.Done() or errCh
+8. Graceful shutdown with timeout

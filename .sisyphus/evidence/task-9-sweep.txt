@@ -1,0 +1,91 @@
+=== Task 9: Final Sweep - Evidence ===
+Date: $(date -Iseconds)
+
+=== Build Status ===
+✓ go build ./cmd/server - SUCCESS
+
+=== Vet Status ===
+✓ go vet ./internal/server/... - SUCCESS (no issues)
+
+=== Format Status ===
+✓ go fmt ./internal/server/... - SUCCESS (no changes needed)
+
+=== Changes Made ===
+
+1. internal/server/handler.go
+   - Added comprehensive package-level comment documenting patterns
+   - Fixed corsMiddleware logging to use "handler:" prefix (line 52)
+   - Improved New() documentation with Pattern 4 reference
+   - Improved Register() documentation with route listing
+   - Added writeJSON() documentation
+   - Improved corsMiddleware() documentation
+
+2. cmd/server/server_linux.go
+   - Fixed unkeyed fields in net.UnixAddr (go vet warning)
+   - Changed: &net.UnixAddr{"http.sock", "unix"}
+   - To:      &net.UnixAddr{Name: "http.sock", Net: "unix"}
+
+3. cmd/server/main.go
+   - Fixed logging consistency: "Shutting down..." → "server: shutting down..."
+   - Fixed logging consistency: "Server stopped" → "server: stopped"
+
+4. internal/server/wsrpc.go
+   - Added WorkerConn struct documentation
+   - Added Hub struct documentation with Pattern 4 reference
+   - Added NewHub() documentation
+   - Added Hub.Run() documentation
+   - Added Hub.Close() documentation
+   - Added WorkerConn.GetWorkerStatus() documentation
+
+5. internal/server/tree.go
+   - Improved LoadTree() deprecation comment
+
+6. internal/server/db.go
+   - Improved NewStore() deprecation comment
+   - Improved Store.Close() documentation
+
+=== Pattern Consistency Achieved ===
+
+All server packages now follow worker-family patterns:
+
+| Pattern | Worker Example | Server Implementation |
+|---------|---------------|----------------------|
+| Pattern 2: sync.Once singleton | downloader | DB (InitDB/GetDB), Tree (InitTree/GetTree) |
+| Pattern 4: Constructor-owned | Hub (not used) | Handler (New), Hub (NewHub) |
+| Pattern 6: Immutable config | N/A | upgrader (documented exception) |
+
+=== Logging Prefixes Verified ===
+
+✓ server: - main server lifecycle (main.go)
+✓ handler: - HTTP request handling (handler.go:52)
+✓ db: - database operations (db.go:92)
+✓ tree: - tree state operations (tree.go:60)
+✓ wsrpc: - WebSocket RPC operations (wsrpc.go:64,66)
+
+=== No Remaining Divergences ===
+
+- No naming mismatches found
+- No logging prefix mismatches found
+- No lifecycle gaps found
+- No state-owner inconsistencies found
+- No dead/incomplete code found
+
+=== Files Aligned ===
+
+✓ internal/server/handler.go
+✓ internal/server/wsrpc.go
+✓ internal/server/db.go
+✓ internal/server/tree.go
+✓ cmd/server/main.go
+✓ cmd/server/server_linux.go
+✓ cmd/server/server_windows.go
+
+=== Server Package Now Reads Like Worker-Family Code ===
+
+All files follow the established patterns:
+1. Package comments document patterns and ownership
+2. Exported functions have comprehensive documentation
+3. Logging uses consistent package prefixes
+4. State ownership follows Pattern 2 (sync.Once) or Pattern 4 (Constructor)
+5. Lifecycle management matches worker runtime patterns
+
