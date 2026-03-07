@@ -8,6 +8,7 @@ import (
 	"myrient-horizon/pkg/protocol"
 )
 
+// DirExt holds aggregated file counts for a directory (including all descendants).
 type DirExt struct {
 	Total      int32 `json:"total"`
 	Claimed    int32 `json:"claimed"`
@@ -24,6 +25,7 @@ type DirExt struct {
 	ArchivedSize   int64 `json:"archived_size"`
 }
 
+// FileExt holds per-file mutable state for server-side tracking.
 type FileExt struct {
 	BestStatus  protocol.TaskStatus
 	ReportCount uint8
@@ -36,34 +38,20 @@ type ServerTree struct {
 	fileHashes []map[int][]byte
 }
 
-var (
-	treeInstance *ServerTree
-	treeOnce     sync.Once
-)
-
-func InitTree(base *mt.Tree[DirExt, FileExt]) *ServerTree {
-	treeOnce.Do(func() {
-		treeInstance = newServerTree(base)
-	})
-	return treeInstance
-}
-
-func GetTree() *ServerTree {
-	if treeInstance == nil {
-		panic("server: Tree not initialized")
-	}
-	return treeInstance
-}
+// Tree is the global ServerTree instance.
+var Tree *ServerTree
 
 func LoadTree(path string) (*ServerTree, error) {
 	tree, err := mt.LoadFromFile[DirExt, FileExt](path)
 	if err != nil {
 		return nil, err
 	}
-	return InitTree(tree), nil
+	Tree = NewTree(tree)
+	return Tree, nil
 }
 
-func newServerTree(base *mt.Tree[DirExt, FileExt]) *ServerTree {
+// NewTree creates a ServerTree from a base tree.
+func NewTree(base *mt.Tree[DirExt, FileExt]) *ServerTree {
 	st := &ServerTree{
 		base:       base,
 		fileHashes: make([]map[int][]byte, len(base.Files)),

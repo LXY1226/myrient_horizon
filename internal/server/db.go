@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -62,26 +61,10 @@ type Store struct {
 	pool *pgxpool.Pool
 }
 
-var (
-	dbInstance *Store
-	dbInitErr  error
-	dbOnce     sync.Once
-)
+// DB is the global Store instance.
+var DB *Store
 
-func InitDB(ctx context.Context, connString string) (*Store, error) {
-	dbOnce.Do(func() {
-		dbInstance, dbInitErr = NewStore(ctx, connString)
-	})
-	return dbInstance, dbInitErr
-}
-
-func GetDB() *Store {
-	if dbInstance == nil {
-		panic("server: DB not initialized")
-	}
-	return dbInstance
-}
-
+// NewStore creates a new Store and runs schema migration.
 func NewStore(ctx context.Context, connString string) (*Store, error) {
 	pool, err := pgxpool.New(ctx, connString)
 	if err != nil {
@@ -98,14 +81,17 @@ func NewStore(ctx context.Context, connString string) (*Store, error) {
 	return &Store{pool: pool}, nil
 }
 
+// Close shuts down the connection pool.
 func (s *Store) Close() {
 	s.pool.Close()
 }
 
+// ---- Workers ----
+
 type Worker struct {
 	ID        int       `json:"id"`
 	Name      string    `json:"name"`
-	Config    []byte    `json:"config"`
+	Config    []byte    `json:"config"` // raw JSONB
 	CreatedAt time.Time `json:"created_at"`
 }
 
