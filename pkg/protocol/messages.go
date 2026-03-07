@@ -1,52 +1,89 @@
 package protocol
 
-import "encoding/json"
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+)
+
+type TaskStatus uint8
 
 // Status constants for file processing states.
 const (
-	StatusNone       uint8 = 0
-	StatusDownloaded uint8 = 1
-	StatusVerified   uint8 = 2
-	StatusArchived   uint8 = 3
-	StatusFailed     uint8 = 4
+	StatusNone       TaskStatus = 0
+	StatusDownloaded TaskStatus = 1
+	StatusVerified   TaskStatus = 2
+	StatusArchived   TaskStatus = 3
+	StatusFailed     TaskStatus = 4
 )
 
-// Envelope is a thin wrapper used to peek at the "type" field before full deserialization.
-type Envelope struct {
-	Type string          `json:"type"`
-	Raw  json.RawMessage `json:"-"`
+const (
+	MessagePing = "ping"
+	MessagePong = "pong"
+
+	MessageTaskSync = "task_sync"
+)
+
+func UnmarshalConnMessage(data []byte) (string, []byte, error) {
+	i := bytes.IndexByte(data, 0x00)
+	if i == -1 {
+		return "", data, errors.New("failed to parse message")
+	}
+	return string(data[:i]), data[i+1:], nil
 }
 
-func ParseEnvelope(data []byte) (Envelope, error) {
-	var env Envelope
-	if err := json.Unmarshal(data, &env); err != nil {
-		return env, err
+func UnmarshalMessage[T any](data []byte) (*T, error) {
+	var v T
+	err := json.Unmarshal(data, &v)
+	if err != nil {
+		return nil, err
 	}
-	env.Raw = data
-	return env, nil
+	return &v, nil
+}
+
+func MarshalConnMessage[T any](msgType string, data T) []byte {
+	wr := bytes.NewBuffer(nil)
+	wr.WriteString(msgType)
+	wr.WriteByte(0)
+	json.NewEncoder(wr).Encode(data)
+	return wr.Bytes()
 }
 
 // --------------- Worker → Server ---------------
 
-// FileReportMsg is a batch of file status reports from a worker.
-type FileReportMsg struct {
-	Type    string       `json:"type"` // "file_report"
-	Reports []FileReport `json:"reports"`
+// PingMsg is a batch of file status reports from a worker.
+type PingMsg struct {
+	Version     int32
+	Verified    []VerifyReport
+	Downloading []DownloadReport
+	Status      WorkerStatus
 }
 
-type FileReport struct {
-	FileID int64  `json:"file_id"` // 全局文件索引
-	Status uint8  `json:"status"`
-	SHA1   string `json:"sha1,omitempty"`
-	CRC32  string `json:"crc32,omitempty"`
+type DownloadReport struct {
+	FileID     int32
+	Downloaded int64
+	Speed      float32
+}
+
+type VerifyReport struct {
+	FileID int32
+	SHA1   []byte
+	CRC32  []byte
+}
+
+type WorkerStatus struct {
+	RemainDownload int
+	QueueVerify    int
+}
+
+type PongMsg struct {
+	Version int32
 }
 
 // HeartbeatMsg is sent periodically by the worker.
 type HeartbeatMsg struct {
 	Type        string  `json:"type"` // "heartbeat"
 	DiskFreeGB  float64 `json:"disk_free_gb"`
-	Downloading int     `json:"downloading"`
-	Verifying   int     `json:"verifying"`
 	Aria2Status string  `json:"aria2_status"`
 }
 
@@ -82,27 +119,12 @@ type WorkerConfig struct {
 	Simultaneous        bool `json:"simultaneous"`
 }
 
-// TaskAssignMsg tells the worker which directories to process.
-type TaskAssignMsg struct {
-	Type   string  `json:"type"` // "task_assign"
-	DirIDs []int32 `json:"dir_ids"`
-}
-
-// TaskRevokeMsg tells the worker to stop processing certain directories.
-type TaskRevokeMsg struct {
-	Type   string  `json:"type"` // "task_revoke"
-	DirIDs []int32 `json:"dir_ids"`
-}
-
 // ReclaimsSyncMsg is sent by server to sync reclaim list to worker.
-type ReclaimsSyncMsg struct {
-	Type     string    `json:"type"` // "reclaims_sync"
-	Reclaims []Reclaim `json:"reclaims"`
-}
+type ReclaimsSyncMsg []Reclaim
 
 type Reclaim struct {
-	DirID   int32 `json:"dir_id"`
-	IsBlack bool  `json:"is_black"`
+	DirID   int32
+	IsBlack bool `json:",omitempty"`
 }
 
 // UpdateRequiredResponse is the JSON body returned by the server when

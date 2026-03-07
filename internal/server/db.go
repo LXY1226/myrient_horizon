@@ -1,4 +1,4 @@
-package db
+package server
 
 import (
 	"context"
@@ -61,6 +61,9 @@ CREATE TABLE IF NOT EXISTS archived (
 type Store struct {
 	pool *pgxpool.Pool
 }
+
+// DB is the global Store instance.
+var DB *Store
 
 // New creates a new Store and runs schema migration.
 func New(ctx context.Context, connString string) (*Store, error) {
@@ -179,7 +182,7 @@ func (s *Store) UpdateWorkerConfig(ctx context.Context, workerID int, config []b
 
 type ItemStatus struct {
 	WorkerID int
-	FileID   int64
+	FileID   int32
 	Status   int16
 	SHA1     []byte
 	CRC32    []byte

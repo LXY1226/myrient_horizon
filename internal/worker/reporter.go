@@ -1,12 +1,10 @@
 package worker
 
 import (
-	"context"
-	"encoding/hex"
-	"encoding/json"
 	"log"
 	"myrient-horizon/internal/worker/config"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -15,14 +13,21 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-type Reporter struct {
-	vMu      sync.Mutex
-	verified []protocol.FileReport
+type reporter struct {
+	vMu           sync.Mutex
+	verified      []protocol.VerifyReport
+	verifiedTasks []*Task
+	lastSentVer   int32
+	lastSent      []protocol.VerifyReport
+	lastSentTasks []*Task
+
+	reportTick *time.Ticker
+	closing    *sync.WaitGroup
 }
 
-var reporter *Reporter
+var Reporter *reporter
 
-func (r *Reporter) Run(wsURL, workerKey string) {
+func (r *reporter) Run(wsURL, workerKey string) {
 	if len(wsURL) > 4 && wsURL[:4] == "http" {
 		wsURL = "ws" + wsURL[4:]
 	}
@@ -41,52 +46,71 @@ func (r *Reporter) Run(wsURL, workerKey string) {
 			backoff = min(backoff*2, maxBackoff)
 			continue
 		}
-		closed := make(chan struct{})
+		closed := false
 		conn.SetReadLimit(1 << 20)
-		go r.report(conn, closed)
+		go r.report(conn, &closed)
 		r.readLoop(conn)
-		closed <- struct{}{}
+		closed = true
 	}
 }
 
-func (r *Reporter) sendReport(conn *websocket.Conn) error {
-	report := protocol.WorkerReportMsg{
-		Type:    protocol.WorkerReport,
-		Reports: r.verified,
-		Metric:  protocol.WorkerMetric{},
-	}
-
-	// TODO downloading... downloaded... verified...
-	// TODO currentDownloadBytes...
-}
-
-func (r *Reporter) report(conn *websocket.Conn, closed chan struct{}) {
-	t := time.NewTicker(time.Duration(config.Global.HeartBeatIntv) * time.Second)
+func (r *reporter) report(conn *websocket.Conn, closed *bool) {
+	r.reportTick = time.NewTicker(time.Duration(config.Global.HeartBeatIntv) * time.Second)
 	defer conn.Close()
-	for {
-		select {
-		case <-t.C:
-			r.vMu.Lock()
-			err := r.sendReport(conn)
-			if err != nil {
-				log.Printf("reporter: report failed: %v", err)
-				return
-			}
-			doneReport := r.verified
-			r.verified = nil
-			r.vMu.Unlock()
-			for _, task := range doneReport {
-				// TODO task rename back to no suffix
-			}
-		case <-closed:
+	for range r.reportTick.C {
+		if *closed {
 			return
 		}
+		r.vMu.Lock()
+		r.lastSentVer++
+		if r.lastSent == nil {
+			r.lastSent = r.verified
+			r.lastSentTasks = r.verifiedTasks
+			r.verified = nil
+			r.verifiedTasks = nil
+		} else {
+			log.Println("reporter: no response received since last sent")
+			r.lastSent = append(r.lastSent, r.verified...)
+			r.lastSentTasks = append(r.verifiedTasks, r.verifiedTasks...)
+			r.verified = nil
+			r.verifiedTasks = nil
+		}
+		r.vMu.Unlock()
+		downloading := downloader.CurrentTask()
+		report := protocol.PingMsg{
+			Version:     r.lastSentVer,
+			Verified:    r.lastSent,
+			Downloading: make([]protocol.DownloadReport, 0, len(downloading)),
+			Status:      protocol.WorkerStatus{},
+		}
+		for _, tsk := range downloading {
+			report.Downloading = append(report.Downloading, protocol.DownloadReport{
+				FileID: tsk.FileID,
+			})
+		}
+		// TODO downloading... downloaded... verified...
+		// TODO currentDownloadBytes...
+		err := conn.WriteMessage(websocket.BinaryMessage,
+			protocol.MarshalConnMessage(protocol.MessagePing, report))
+		if err != nil {
+			log.Printf("reporter: report failed: %v", err)
+			return
+		}
+		if r.closing != nil {
+			r.reportTick.Stop()
+		}
 	}
+}
+func (r *reporter) Close() *sync.WaitGroup {
+	r.closing = &sync.WaitGroup{}
+	r.closing.Add(1)
+	r.reportTick.Reset(10 * time.Millisecond)
+	return r.closing
 }
 
 // readLoop reads messages from the server and dispatches them.
 // On connection loss it automatically reconnects (unless ctx is cancelled).
-func (r *Reporter) readLoop(conn *websocket.Conn) {
+func (r *reporter) readLoop(conn *websocket.Conn) {
 	log.Println("reporter: connected to server")
 	for {
 		_, data, err := conn.ReadMessage()
@@ -94,43 +118,67 @@ func (r *Reporter) readLoop(conn *websocket.Conn) {
 			log.Printf("reporter: read error: %v", err)
 			return
 		}
-
-		env, err := protocol.ParseEnvelope(data)
+		msgType, body, err := protocol.UnmarshalConnMessage(data)
 		if err != nil {
-			log.Printf("reporter: bad message: %v", err)
+			log.Printf("reporter: read error: %v", err)
 			continue
 		}
 
-		switch env.Type {
+		switch msgType {
 		//case "config_update":
 		//	// do nothing
 		//	//var msg protocol.ConfigUpdateMsg
-		//	//if json.Unmarshal(data, &msg) == nil && r.OnConfigUpdate != nil {
+		//	//if json.Unmarshal(body, &msg) == nil && r.OnConfigUpdate != nil {
 		//	//	r.OnConfigUpdate(msg.Config)
 		//	//}
-		case "reclaim_map":
-			var msg protocol.TaskAssignMsg
-			if json.Unmarshal(data, &msg) == nil {
-				// TODO reinit download map and replace download planner
+		case protocol.MessagePong:
+			msg, err := protocol.UnmarshalMessage[protocol.PongMsg](body)
+			if err != nil {
+				log.Printf("reporter: read error: %v", err)
+				continue
 			}
+			r.vMu.Lock()
+			if r.lastSentVer != msg.Version {
+				log.Println("reporter: reported version mismatch, server overloaded?")
+				r.vMu.Unlock()
+				continue
+			}
+			reportedTask := r.lastSentTasks
+			r.lastSentTasks = nil
+			r.lastSent = nil
+			r.vMu.Unlock()
+			for _, task := range reportedTask {
+				if task.Managed {
+					err = os.Rename(task.VerifiedPath(), task.LocalPath)
+					if err != nil {
+						log.Printf("reporter: rename failed: %v", err)
+					}
+				}
+			}
+			if r.closing != nil {
+				r.closing.Done()
+				return
+			}
+		case protocol.MessageTaskSync:
+			msg, err := protocol.UnmarshalMessage[protocol.ReclaimsSyncMsg](body)
+			if err != nil {
+				log.Printf("reporter: bad task assign: %v", err)
+				continue
+			}
+			_ = msg // TODO generate Black-White task
 		default:
-			log.Printf("reporter: unknown message type: %s", env.Type)
+			log.Printf("reporter: unknown message type: %s", msgType)
 		}
 	}
 }
 
 // PushVerified adds a file status report to the pending batch.
 // Automatically flushes when batch size is reached.
-func (r *Reporter) PushVerified(ctx context.Context, fileID int64, status uint8, sha1, crc32 []byte) {
-	report := protocol.FileReport{
-		FileID: fileID,
-		Status: status,
-	}
-	if sha1 != nil {
-		report.SHA1 = hex.EncodeToString(sha1)
-	}
-	if crc32 != nil {
-		report.CRC32 = hex.EncodeToString(crc32)
+func (r *reporter) PushVerified(t *Task, sha1, crc32 []byte) {
+	report := protocol.VerifyReport{
+		FileID: t.FileID,
+		SHA1:   sha1,
+		CRC32:  crc32,
 	}
 
 	r.vMu.Lock()

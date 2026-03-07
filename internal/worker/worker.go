@@ -2,8 +2,9 @@ package worker
 
 import (
 	"log"
-	"myrient-horizon/internal/worker/config"
 	"os"
+
+	"myrient-horizon/internal/worker/config"
 )
 
 func EnsureConfig() *config.WorkerConfig {
@@ -19,7 +20,7 @@ func EnsureConfig() *config.WorkerConfig {
 		if err := config.Save(workDir, cfg); err != nil {
 			log.Fatalf("Failed to save default config: %v", err)
 		}
-		log.Fatalf("No config found. A default worker.json has been created in %s — please edit it and restart.", workDir)
+		log.Fatalf("No config found. A default worker.json has been created in %s; please edit it and restart.", workDir)
 	}
 	if cfg.Key == "" {
 		log.Printf("Registering with server as %q...", cfg.Name)
@@ -34,5 +35,6 @@ func EnsureConfig() *config.WorkerConfig {
 	} else {
 		log.Println("Loaded config: worker", cfg.Name)
 	}
+	config.Global = *cfg
 	return cfg
 }

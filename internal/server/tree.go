@@ -27,7 +27,7 @@ type DirExt struct {
 
 // FileExt holds per-file mutable state for server-side tracking.
 type FileExt struct {
-	BestStatus  uint8
+	BestStatus  protocol.TaskStatus
 	ReportCount uint8
 	HasConflict bool
 }
@@ -40,6 +40,21 @@ type ServerTree struct {
 	// Per-file: track known SHA1 per worker for conflict detection.
 	// Key: global file index. Value: map[workerID]sha1Bytes.
 	fileHashes []map[int][]byte
+}
+
+// Tree is the global ServerTree instance.
+var Tree *ServerTree
+
+func LoadTree(path string) error {
+	tree, err := mt.LoadFromFile[DirExt, FileExt](path)
+	if err != nil {
+		return err
+	}
+	Tree = &ServerTree{
+		base:       base,
+		fileHashes: make([]map[int][]byte, len(base.Files)),
+	}
+	return nil
 }
 
 // New creates a ServerTree from a base tree.
@@ -81,7 +96,7 @@ func (st *ServerTree) initTotals() {
 }
 
 // ApplyReport processes a single file status report using fileID (global file index).
-func (st *ServerTree) ApplyReport(fileID int64, workerID int, status uint8, sha1 []byte) {
+func (st *ServerTree) ApplyReport(fileID int64, workerID int, status protocol.TaskStatus, sha1 []byte) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 
@@ -144,7 +159,7 @@ func (st *ServerTree) hasConflictLocked(fileID int64) bool {
 }
 
 // bubbleDelta updates dirExt along the ancestor chain when a file's status changes.
-func (st *ServerTree) bubbleDelta(dirID int32, oldStatus, newStatus uint8, hasConflict bool, fileSize int64) {
+func (st *ServerTree) bubbleDelta(dirID int32, oldStatus, newStatus protocol.TaskStatus, hasConflict bool, fileSize int64) {
 	if oldStatus == newStatus {
 		return
 	}
@@ -155,7 +170,7 @@ func (st *ServerTree) bubbleDelta(dirID int32, oldStatus, newStatus uint8, hasCo
 	}
 }
 
-func decrStatus(s *DirExt, status uint8, size int64) {
+func decrStatus(s *DirExt, status protocol.TaskStatus, size int64) {
 	switch status {
 	case protocol.StatusDownloaded:
 		s.Downloaded--
@@ -171,7 +186,7 @@ func decrStatus(s *DirExt, status uint8, size int64) {
 	}
 }
 
-func incrStatus(s *DirExt, status uint8, size int64) {
+func incrStatus(s *DirExt, status protocol.TaskStatus, size int64) {
 	switch status {
 	case protocol.StatusDownloaded:
 		s.Downloaded++

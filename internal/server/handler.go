@@ -1,30 +1,25 @@
-package handler
+package server
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
-	stree "myrient-horizon/internal/server"
 	"net/http"
 	"strconv"
 	"time"
 
-	"myrient-horizon/internal/server/db"
-	"myrient-horizon/internal/server/wsrpc"
 	"myrient-horizon/pkg/protocol"
 )
 
 // Handler holds all HTTP handler dependencies.
 type Handler struct {
-	store *db.Store
-	tree  *stree.ServerTree
-	hub   *wsrpc.Hub
+	hub *Hub
 }
 
 // New creates a new Handler.
-func New(store *db.Store, tree *stree.ServerTree, hub *wsrpc.Hub) *Handler {
-	return &Handler{store: store, tree: tree, hub: hub}
+func New(hub *Hub) *Handler {
+	return &Handler{hub: hub}
 }
 
 // corsMiddleware wraps an http.Handler and adds CORS headers to every response.
@@ -92,7 +87,7 @@ func (h *Handler) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		workerID, err := h.store.AuthenticateWorker(r.Context(), key)
+		workerID, err := DB.AuthenticateWorker(r.Context(), key)
 		if err != nil || workerID == 0 {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -112,7 +107,7 @@ func (h *Handler) handleRegister(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	id, key, err := h.store.RegisterWorker(r.Context(), req.Name)
+	id, key, err := DB.RegisterWorker(r.Context(), req.Name)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -137,7 +132,7 @@ func (h *Handler) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	configJSON, _ := json.Marshal(cfg)
-	if err := h.store.UpdateWorkerConfig(r.Context(), workerID, configJSON); err != nil {
+	if err := DB.UpdateWorkerConfig(r.Context(), workerID, configJSON); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -150,16 +145,17 @@ func (h *Handler) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleListWorkers(w http.ResponseWriter, r *http.Request) {
-	workers, err := h.store.ListWorkers(r.Context())
+	workers, err := DB.ListWorkers(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	type workerInfo struct {
-		db.Worker
+		Worker
 		Online    bool                   `json:"online"`
-		Heartbeat *protocol.HeartbeatMsg `json:"heartbeat,omitempty"`
+		Heartbeat *protocol.WorkerStatus `json:"heartbeat,omitempty"`
+		LastSeen  time.Time              `json:"last_seen"`
 	}
 
 	result := make([]workerInfo, len(workers))
@@ -168,7 +164,8 @@ func (h *Handler) handleListWorkers(w http.ResponseWriter, r *http.Request) {
 		info := workerInfo{Worker: wk}
 		if conn, ok := conns[wk.ID]; ok {
 			info.Online = true
-			info.Heartbeat, _ = conn.GetHeartbeat()
+			info.c
+			info.Heartbeat, _ = conn.GetWorkerStatus()
 		}
 		result[i] = info
 	}
@@ -184,8 +181,8 @@ func (h *Handler) handleConflicts(w http.ResponseWriter, r *http.Request) {
 // ---- Statistics API ----
 
 func (h *Handler) handleOverview(w http.ResponseWriter, r *http.Request) {
-	stats := h.tree.GetDirStats(0) // Root dir = entire tree.
-	writeJSON(w, http.StatusOK, stree.StatsToOverview(stats))
+	stats := Tree.GetDirStats(0) // Root dir = entire tree.
+	writeJSON(w, http.StatusOK, StatsToOverview(stats))
 }
 
 func (h *Handler) handleTree(w http.ResponseWriter, r *http.Request) {
@@ -198,7 +195,7 @@ func (h *Handler) handleTree(w http.ResponseWriter, r *http.Request) {
 
 	dirID := int32(0)
 	if p := r.URL.Query().Get("path"); p != "" {
-		id, ok := h.tree.Base().DirByPath(p)
+		id, ok := Tree.Base().DirByPath(p)
 		if !ok {
 			http.Error(w, "directory not found", http.StatusNotFound)
 			return
@@ -206,16 +203,16 @@ func (h *Handler) handleTree(w http.ResponseWriter, r *http.Request) {
 		dirID = id
 	}
 
-	nodes := h.tree.BuildTreeNodes(dirID, depth)
+	nodes := Tree.BuildTreeNodes(dirID, depth)
 	writeJSON(w, http.StatusOK, map[string]any{"directories": nodes})
 }
 
 func (h *Handler) handleSSEStream(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Query().Get("path")
 	if path == "" {
-		path = h.tree.Base().Dirs[0].Path // root
+		path = Tree.Base().Dirs[0].Path // root
 	}
-	dirID, ok := h.tree.Base().DirByPath(path)
+	dirID, ok := Tree.Base().DirByPath(path)
 	if !ok {
 		http.Error(w, "directory not found", http.StatusNotFound)
 		return
@@ -248,12 +245,12 @@ func (h *Handler) handleSSEStream(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) sendSSEDirStats(w http.ResponseWriter, flusher http.Flusher, dirID int32, path string) {
-	children := h.tree.ChildDirStats(dirID)
+	children := Tree.ChildDirStats(dirID)
 	data := map[string]any{
 		"type":     "dir_stats",
 		"path":     path,
 		"dir_id":   dirID,
-		"stats":    h.tree.GetDirStats(dirID),
+		"stats":    Tree.GetDirStats(dirID),
 		"children": children,
 	}
 	jsonData, _ := json.Marshal(data)
@@ -269,7 +266,7 @@ func (h *Handler) handleWorkerStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	worker, err := h.store.GetWorker(r.Context(), workerID)
+	worker, err := DB.GetWorker(r.Context(), workerID)
 	if err != nil {
 		http.Error(w, "worker not found", http.StatusNotFound)
 		return
@@ -284,7 +281,7 @@ func (h *Handler) handleWorkerStats(w http.ResponseWriter, r *http.Request) {
 
 	if conn := h.hub.GetConn(workerID); conn != nil {
 		result["online"] = true
-		hb, lastSeen := conn.GetHeartbeat()
+		hb, lastSeen := conn.GetWorkerStatus()
 		result["heartbeat"] = hb
 		result["last_seen"] = lastSeen
 	}
@@ -298,14 +295,14 @@ func (h *Handler) handleDirDetail(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing path", http.StatusBadRequest)
 		return
 	}
-	dirID, ok := h.tree.Base().DirByPath(path)
+	dirID, ok := Tree.Base().DirByPath(path)
 	if !ok {
 		http.Error(w, "directory not found", http.StatusNotFound)
 		return
 	}
 
 	// Build file list with status from in-memory tree (no DB query needed in new design)
-	dir := &h.tree.Base().Dirs[dirID]
+	dir := &Tree.Base().Dirs[dirID]
 	type fileInfo struct {
 		Idx      int32  `json:"idx"`
 		Name     string `json:"name"`
@@ -317,13 +314,13 @@ func (h *Handler) handleDirDetail(w http.ResponseWriter, r *http.Request) {
 	files := make([]fileInfo, 0, dir.FileEnd-dir.FileStart)
 
 	for i := dir.FileStart; i < dir.FileEnd; i++ {
-		f := &h.tree.Base().Files[i]
+		f := &Tree.Base().Files[i]
 		localIdx := i - dir.FileStart
 		fi := fileInfo{
 			Idx:      localIdx,
 			Name:     f.Name,
 			Size:     f.Size,
-			Status:   f.Ext.BestStatus,
+			Status:   uint8(f.Ext.BestStatus),
 			Conflict: f.Ext.HasConflict,
 		}
 		files = append(files, fi)
@@ -332,7 +329,7 @@ func (h *Handler) handleDirDetail(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"dir_id": dirID,
 		"path":   path,
-		"stats":  h.tree.GetDirStats(dirID),
+		"stats":  Tree.GetDirStats(dirID),
 		"files":  files,
 	})
 }

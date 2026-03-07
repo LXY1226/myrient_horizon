@@ -11,9 +11,6 @@ import (
 	"syscall"
 	"time"
 
-	"myrient-horizon/internal/server/db"
-	"myrient-horizon/internal/server/handler"
-	"myrient-horizon/internal/server/wsrpc"
 	"myrient-horizon/pkg/myrienttree"
 )
 
@@ -39,31 +36,31 @@ func main() {
 
 	// 2. Connect to PostgreSQL.
 	log.Printf("Connecting to database...")
-	store, err := db.New(ctx, *dbURL)
+	stree.DB, err = stree.New(ctx, *dbURL)
 	if err != nil {
 		log.Fatalf("Failed to connect to DB: %v", err)
 	}
-	defer store.Close()
+	defer stree.DB.Close()
 	log.Printf("Database connected, schema migrated")
 
 	// 3. Build server tree.
-	serverTree := stree.New(baseTree)
+	stree.Tree = stree.New(baseTree)
 	// Note: With the new design, workers request their own status on connect.
 	// No need to recover state or load claims here.
 
-	rootStats := serverTree.GetDirStats(0)
+	rootStats := stree.Tree.GetDirStats(0)
 	log.Printf("State initialized: %d total, %d downloaded, %d verified, %d archived, %d failed, %d conflicts",
 		rootStats.Total, rootStats.Downloaded, rootStats.Verified, rootStats.Archived, rootStats.Failed, rootStats.Conflict)
 
 	// 4. Set up WebSocket hub and HTTP handlers.
-	hub := wsrpc.NewHub(store, serverTree)
+	hub := stree.NewHub()
 	hub.WorkerVersion = *workerVersion
 	hub.WorkerDownloadURL = *workerURL
 	hub.WorkerSHA256 = *workerSHA256
 	if *workerVersion != "" {
 		log.Printf("Worker version check enabled: expecting %s", *workerVersion)
 	}
-	h := handler.New(store, serverTree, hub)
+	h := stree.New(hub)
 
 	mux := http.NewServeMux()
 	handlerWithCors := h.Register(mux)
@@ -78,8 +75,12 @@ func main() {
 
 	// 5. Start server.
 	go func() {
-		log.Printf("Server listening on %s", *addr)
-		if err := server.ListenAndServeTLS(*dataDir+"/cert.pem", *dataDir+"/key.pem"); err != nil && err != http.ErrServerClosed {
+		ln, err := getListener(*addr)
+		if err != nil {
+			log.Fatal(err)
+		}
+		log.Printf("Server listening on %s", ln.Addr())
+		if err := server.ServeTLS(ln, *dataDir+"/cert.pem", *dataDir+"/key.pem"); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Server error: %v", err)
 		}
 	}()

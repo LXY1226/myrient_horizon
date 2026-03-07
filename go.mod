@@ -3,12 +3,12 @@ module myrient-horizon
 go 1.25.2
 
 require (
+	github.com/go4org/hashtriemap v0.0.0-20251130024219-545ba229f689
 	github.com/google/flatbuffers v25.12.19+incompatible
 	github.com/gorilla/websocket v1.5.3
 	github.com/jackc/pgx/v5 v5.8.0
 	golang.org/x/crypto v0.48.0
 	golang.org/x/sys v0.41.0
-	nhooyr.io/websocket v1.8.17
 )
 
 require (

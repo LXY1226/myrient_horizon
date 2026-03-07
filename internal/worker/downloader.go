@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"myrient-horizon/internal/worker/aria2"
+	"myrient-horizon/pkg/protocol"
 )
 
 var badVerifyTaskCh = make(chan Task, 16384)
@@ -36,7 +37,6 @@ var (
 type Downloader struct {
 	taskCh      chan Task
 	client      *aria2.Client
-	verifier    *Verifier
 	gidMap      map[string]*Task
 	downloading int32
 }
@@ -53,11 +53,6 @@ func InitDownloader(client *aria2.Client, taskBufSize int) *Downloader {
 	return downloaderInstance
 }
 
-// SetVerifier sets the Verifier for chain submission.
-func (d *Downloader) SetVerifier(v *Verifier) {
-	d.verifier = v
-}
-
 // Submit sends a task to the download queue.
 func (d *Downloader) Submit(ctx context.Context, task Task) error {
 	select {
@@ -68,59 +63,59 @@ func (d *Downloader) Submit(ctx context.Context, task Task) error {
 	}
 }
 
+func (d *Downloader) CurrentTask() []*Task {
+	return nil
+	// TODO get tasks from aria2
+}
+
 // Downloading returns the current download count.
 func (d *Downloader) Downloading() int32 {
 	return atomic.LoadInt32(&d.downloading)
 }
 
 // Run is the main loop. Must be called in a goroutine.
-func (d *Downloader) Run(ctx context.Context) {
-	for {
-		if ctx.Err() != nil {
-			return
-		}
-
-		d.adoptExisting(ctx)
-
-		events := d.client.Events
-		done := d.client.Done()
-
-	inner:
-		for {
-			select {
-			case <-ctx.Done():
-				return
-
-			case task := <-d.taskCh:
-				gid, err := d.client.AddURI(ctx, task.URI, task.LocalDir, task.Name+".downloading")
-				if err != nil {
-					log.Printf("downloader: AddURI failed for %s: %v", task.Name, err)
-					continue
-				}
-				d.gidMap[gid] = &task
-				atomic.AddInt32(&d.downloading, 1)
-
-			case ev := <-events:
-				task, ok := d.gidMap[ev.GID]
-				if !ok {
-					continue
-				}
-				delete(d.gidMap, ev.GID)
-				atomic.AddInt32(&d.downloading, -1)
-
-				if ev.Success && d.verifier != nil {
-					d.verifier.Submit(*task)
-				}
-
-			case <-done:
-				log.Println("downloader: aria2 connection lost")
-				d.drainEvents(events)
-				d.failInFlight()
-				d.reconnect(ctx)
-				break inner
-			}
-		}
-	}
+func (d *Downloader) Run() {
+	//for {
+	//	d.adoptExisting()
+	//
+	//	events := d.client.Events
+	//	done := d.client.Done()
+	//
+	//inner:
+	//	for {
+	//		select {
+	//
+	//		case task := <-d.taskCh:
+	//			dir, _ := filepath.Split(task.LocalPath)
+	//			gid, err := d.client.AddURI(ctx, task.GetURI(), dir, task.GetFile().Name+".downloading")
+	//			if err != nil {
+	//				log.Printf("downloader: AddURI failed for %s: %v", task.Name, err)
+	//				continue
+	//			}
+	//			d.gidMap[gid] = &task
+	//			atomic.AddInt32(&d.downloading, 1)
+	//
+	//		case ev := <-events:
+	//			task, ok := d.gidMap[ev.GID]
+	//			if !ok {
+	//				continue
+	//			}
+	//			delete(d.gidMap, ev.GID)
+	//			atomic.AddInt32(&d.downloading, -1)
+	//
+	//			if ev.Success && d.verifier != nil {
+	//				d.verifier.Submit(*task)
+	//			}
+	//
+	//		case <-done:
+	//			log.Println("downloader: aria2 connection lost")
+	//			d.drainEvents(events)
+	//			d.failInFlight()
+	//			d.reconnect(ctx)
+	//			break inner
+	//		}
+	//	}
+	//}
 }
 
 func (d *Downloader) adoptExisting(ctx context.Context) {
@@ -143,8 +138,8 @@ func (d *Downloader) drainEvents(events <-chan aria2.Event) {
 			if task, ok := d.gidMap[ev.GID]; ok {
 				delete(d.gidMap, ev.GID)
 				atomic.AddInt32(&d.downloading, -1)
-				if ev.Success && d.verifier != nil {
-					d.verifier.Submit(*task)
+				if ev.Success {
+					verifyTaskCh <- task
 				}
 			}
 		default:
@@ -153,13 +148,14 @@ func (d *Downloader) drainEvents(events <-chan aria2.Event) {
 	}
 }
 
-func (d *Downloader) failInFlight() {
-	for gid, task := range d.gidMap {
-		log.Printf("downloader: failing in-flight task %s (GID %s)", task.Name, gid)
-		atomic.AddInt32(&d.downloading, -1)
-		delete(d.gidMap, gid)
-	}
-}
+//
+//func (d *Downloader) failInFlight() {
+//	for gid, task := range d.gidMap {
+//		log.Printf("downloader: failing in-flight task %s (GID %s)", task.Name, gid)
+//		atomic.AddInt32(&d.downloading, -1)
+//		delete(d.gidMap, gid)
+//	}
+//}
 
 func (d *Downloader) reconnect(ctx context.Context) {
 	backoff := time.Second

@@ -421,6 +421,26 @@ func (c *Client) TellWaiting(ctx context.Context, offset, num int) ([]DownloadIn
 	return result, nil
 }
 
+// TellStatus returns the status for a specific GID.
+func (c *Client) TellStatus(ctx context.Context, gid string) (DownloadInfo, error) {
+	id := c.idCounter.Add(1)
+	req := rpcRequest{
+		JSONRPC: "2.0",
+		ID:      id,
+		Method:  "aria2.tellStatus",
+		Params:  []any{gid, []string{"gid", "dir", "files"}},
+	}
+	raw, err := c.callRPCRaw(ctx, req)
+	if err != nil {
+		return DownloadInfo{}, err
+	}
+	var result DownloadInfo
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return DownloadInfo{}, fmt.Errorf("unmarshal tellStatus: %w", err)
+	}
+	return result, nil
+}
+
 // JSON-RPC types.
 type rpcRequest struct {
 	JSONRPC string `json:"jsonrpc"`
