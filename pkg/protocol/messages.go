@@ -1,11 +1,14 @@
+// Package protocol defines message types and serialization utilities for
+// worker-server communication over WebSocket connections.
 package protocol
 
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
+	"fmt"
 )
 
+// TaskStatus represents the processing state of a file.
 type TaskStatus uint8
 
 // Status constants for file processing states.
@@ -21,31 +24,38 @@ const (
 	MessagePing = "ping"
 	MessagePong = "pong"
 
-	MessageTaskSync = "task_sync"
+	MessageTaskSync           = "task_sync"
+	MessageHeartbeat          = "heartbeat"
+	MessageStatusSyncRequest  = "status_sync_request"
+	MessageStatusSyncResponse = "status_sync_response"
 )
 
+// UnmarshalConnMessage splits a connection message into type and payload.
+// The format expects a null byte separator: "type\x00payload".
 func UnmarshalConnMessage(data []byte) (string, []byte, error) {
 	i := bytes.IndexByte(data, 0x00)
 	if i == -1 {
-		return "", data, errors.New("failed to parse message")
+		return "", data, fmt.Errorf("invalid message format: missing null separator")
 	}
 	return string(data[:i]), data[i+1:], nil
 }
 
+// UnmarshalMessage deserializes JSON data into a typed value.
 func UnmarshalMessage[T any](data []byte) (*T, error) {
 	var v T
-	err := json.Unmarshal(data, &v)
-	if err != nil {
-		return nil, err
+	if err := json.Unmarshal(data, &v); err != nil {
+		return nil, fmt.Errorf("unmarshal message: %w", err)
 	}
 	return &v, nil
 }
 
+// MarshalConnMessage serializes a typed value with a message type prefix.
+// Output format: "type\x00jsondata".
 func MarshalConnMessage[T any](msgType string, data T) []byte {
 	wr := bytes.NewBuffer(nil)
 	wr.WriteString(msgType)
 	wr.WriteByte(0)
-	json.NewEncoder(wr).Encode(data)
+	_ = json.NewEncoder(wr).Encode(data)
 	return wr.Bytes()
 }
 

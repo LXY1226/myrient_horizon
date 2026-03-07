@@ -1,3 +1,5 @@
+// Package myrienttree provides an in-memory tree structure for directory and file
+// metadata loaded from FlatBuffers. Both server and worker share this package.
 package myrienttree
 
 import (
@@ -11,7 +13,10 @@ import (
 
 // DirNode represents a directory in the in-memory tree.
 type DirNode[DirExt any] struct {
-	Name      string  // unsafe.String pointing into flatbuf memory
+	// Name is the directory name (e.g., "Nintendo", "/").
+	// The string references flatbuffer memory and remains valid
+	// only as long as Tree.Flatbuf is retained.
+	Name      string  // directory name
 	ID        int32   // index in Tree.Dirs
 	ParentIdx int32   // parent directory index in Dirs, -1 for root
 	FileStart int32   // start index of this dir's files in Tree.Files (inclusive)
@@ -24,11 +29,17 @@ type DirNode[DirExt any] struct {
 
 // FileNode represents a file in the in-memory tree.
 type FileNode[FileExt any] struct {
-	Name   string // unsafe.String pointing into flatbuf memory
+	// Name is the file name.
+	// The string references flatbuffer memory and remains valid
+	// only as long as Tree.Flatbuf is retained.
+	Name   string // file name
 	Size   int64
 	DirIdx int32 // owning directory index in Tree.Dirs
 
-	Ext FileExt // Extension field for generic type (holds mutable state in server)
+	// Ext holds extension-specific mutable state.
+	// In the server, this stores database IDs and verification status.
+	// In the worker, this tracks local download paths and progress.
+	Ext FileExt
 }
 
 // Tree is the core in-memory representation loaded from a flatbuffer.

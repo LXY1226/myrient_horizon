@@ -1,0 +1,197 @@
+# Golangci-lint configuration for backend style enforcement
+# Aligned with .sisyphus/contract/backend-style.md
+# Focused on naming, comments, dead code, and ignored errors
+
+run:
+  timeout: 5m
+  # Use Go 1.24 (golangci-lint v1.64.8 is built with Go 1.24)
+  # Project uses Go 1.25 but linting runs with 1.24-compatible binary
+  go: '1.24'
+  # Only analyze handwritten backend code
+  allow-parallel-runners: true
+
+# Narrow linter selection focused on style contract violations
+linters:
+  enable:
+    # Code quality (using 'unused' instead of deprecated deadcode/structcheck/varcheck)
+    - gosimple          # Simplify code
+    - govet             # Standard Go vet
+    - ineffassign       # Unused assignments
+    - staticcheck       # Static analysis
+    - unused            # Unused constants/variables/functions/types
+    
+    # Style and naming
+    - gocritic          # Style criticism
+    - gofmt             # Gofmt formatting
+    - goimports         # Import formatting
+    - misspell          # Spelling mistakes
+    - revive            # Fast, configurable linter
+    
+    # Error handling
+    - errcheck          # Unchecked errors
+    - errorlint         # Error wrapping
+
+  disable:
+    # Too noisy for current phase
+    - cyclop            # Cyclomatic complexity
+    - dupl              # Duplicate code
+    - exhaustruct       # Struct field initialization
+    - forbidigo         # Forbidden identifiers
+    - funlen            # Function length
+    - gochecknoglobals  # Global variables (we use them intentionally)
+    - gochecknoinits    # Init functions (we may need them)
+    - gocognit          # Cognitive complexity
+    - gocyclo           # Cyclomatic complexity
+    - godot             # Comment end period
+    - godox             # TODO/FIXME detection (we know we have these)
+    - gofumpt           # Stricter gofmt (optional)
+    - lll               # Line length limit
+    - nestif            # Nested ifs
+    - nlreturn          # Newline before return
+    - nolintlint        # nolint directive
+    - paralleltest      # Parallel test
+    - prealloc          # Preallocation hints
+    - stylecheck        # Style checking (use revive instead)
+    - testpackage       # Test package naming
+    - unparam           # Unused function parameters
+    - whitespace        # Whitespace
+    - wsl               # Whitespace style
+
+# Linter-specific configuration
+linters-settings:
+  gocritic:
+    enabled-tags:
+      - performance
+      - style
+      - experimental
+    disabled-checks:
+      - captLocal       # Allow capitalized locals (we use this)
+      - ifElseChain     # Allow if-else chains
+      - unnamedResult   # Allow unnamed results
+  
+  gofmt:
+    # Standard gofmt formatting
+    simplify: true
+  
+  goimports:
+    local-prefixes: github.com/lin/myrient-horizon
+  
+  revive:
+    # Fast linting focused on style issues
+    rules:
+      # Naming
+      - name: exported
+        severity: warning
+        arguments:
+          - checkPrivateReceivers
+          - checkPublicInterface
+      
+      # Comments
+      - name: package-comments
+        severity: warning
+      
+      # Common mistakes
+      - name: blank-imports
+        severity: error
+      - name: dot-imports
+        severity: error
+      - name: empty-block
+        severity: warning
+      - name: error-naming
+        severity: warning
+      - name: error-return
+        severity: warning
+      - name: error-strings
+        severity: warning
+      - name: if-return
+        severity: warning
+      - name: increment-decrement
+        severity: warning
+      - name: indent-error-flow
+        severity: warning
+      - name: range
+        severity: warning
+      - name: receiver-naming
+        severity: warning
+      - name: superfluous-else
+        severity: warning
+      - name: time-equal
+        severity: warning
+      - name: unreachable-code
+        severity: error
+      - name: var-declaration
+        severity: warning
+      
+      # Style contract specific
+      - name: var-naming
+        severity: warning
+        arguments:
+          - ["ID", "URL", "HTTP", "JSON", "XML"]  # Allow common acronyms
+          - ["^.*_test\\.go$"]
+
+  errcheck:
+    # Check for ignored errors
+    exclude-functions:
+      - (*os.File).Close
+      - (*github.com/jmoiron/sqlx.DB).Close
+
+  misspell:
+    locale: US
+
+  staticcheck:
+    # Enable all SA* checks
+    checks: ["all", "-SA1019"]
+
+# File-specific exclusions (for generated files and known issues)
+issues:
+  # Maximum count of issues per linter
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  
+  # Exclude generated files from analysis
+  exclude-dirs:
+    - pkg/myrienttree/MyrientTree
+    - pkg/protocol
+  exclude-files:
+    - ".*_gen\\.go$"
+    - "generated_.*\\.go$"
+  
+  # Exclude specific patterns
+  exclude-rules:
+    # Generated FlatBuffers code
+    - path: pkg/myrienttree/MyrientTree/
+      linters:
+        - all
+    
+    # Protocol definitions
+    - path: pkg/protocol/
+      linters:
+        - all
+    
+    # Allow Chinese comments for now (to be cleaned up later)
+    - path: internal/worker/task.go
+      text: "^// 全局|本地"
+      linters:
+        - revive
+    
+    # Ignore TODO comments for now (captured in baseline)
+    - text: "^// TODO"
+      linters:
+        - godox
+    - text: "^// FIXME"
+      linters:
+        - godox
+
+  # Show only new issues (for CI)
+  new: false
+  
+  # Deduplicate issues by line
+  uniq-by-line: true
+
+# Output format
+output:
+  formats:
+    - format: colored-line-number
+  print-issued-lines: true
+  print-linter-name: true
+  sort-results: true
