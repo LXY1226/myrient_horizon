@@ -8,7 +8,6 @@ import (
 	"myrient-horizon/pkg/protocol"
 )
 
-// DirExt holds aggregated file counts for a directory (including all descendants).
 type DirExt struct {
 	Total      int32 `json:"total"`
 	Claimed    int32 `json:"claimed"`
@@ -25,64 +24,64 @@ type DirExt struct {
 	ArchivedSize   int64 `json:"archived_size"`
 }
 
-// FileExt holds per-file mutable state for server-side tracking.
 type FileExt struct {
 	BestStatus  protocol.TaskStatus
 	ReportCount uint8
 	HasConflict bool
 }
 
-// ServerTree wraps the base tree with a mutex for thread-safe access.
-// All mutable state is stored in DirNode.Ext (DirExt) and FileNode.Ext (FileExt).
 type ServerTree struct {
-	mu   sync.RWMutex
-	base *mt.Tree[DirExt, FileExt]
-	// Per-file: track known SHA1 per worker for conflict detection.
-	// Key: global file index. Value: map[workerID]sha1Bytes.
+	mu         sync.RWMutex
+	base       *mt.Tree[DirExt, FileExt]
 	fileHashes []map[int][]byte
 }
 
-// Tree is the global ServerTree instance.
-var Tree *ServerTree
+var (
+	treeInstance *ServerTree
+	treeOnce     sync.Once
+)
 
-func LoadTree(path string) error {
-	tree, err := mt.LoadFromFile[DirExt, FileExt](path)
-	if err != nil {
-		return err
-	}
-	Tree = &ServerTree{
-		base:       base,
-		fileHashes: make([]map[int][]byte, len(base.Files)),
-	}
-	return nil
+func InitTree(base *mt.Tree[DirExt, FileExt]) *ServerTree {
+	treeOnce.Do(func() {
+		treeInstance = newServerTree(base)
+	})
+	return treeInstance
 }
 
-// New creates a ServerTree from a base tree.
-func New(base *mt.Tree[DirExt, FileExt]) *ServerTree {
+func GetTree() *ServerTree {
+	if treeInstance == nil {
+		panic("server: Tree not initialized")
+	}
+	return treeInstance
+}
+
+func LoadTree(path string) (*ServerTree, error) {
+	tree, err := mt.LoadFromFile[DirExt, FileExt](path)
+	if err != nil {
+		return nil, err
+	}
+	return InitTree(tree), nil
+}
+
+func newServerTree(base *mt.Tree[DirExt, FileExt]) *ServerTree {
 	st := &ServerTree{
 		base:       base,
 		fileHashes: make([]map[int][]byte, len(base.Files)),
 	}
-	// Initialize Total counts by walking the tree bottom-up.
 	st.initTotals()
 	return st
 }
 
-// Base returns the underlying tree for read-only access.
-// Callers must not modify the returned tree; use ServerTree methods for mutations.
 func (st *ServerTree) Base() *mt.Tree[DirExt, FileExt] {
 	return st.base
 }
 
-// GetDirStats returns a copy of the stats for a directory.
 func (st *ServerTree) GetDirStats(dirID int32) DirExt {
 	st.mu.RLock()
 	defer st.mu.RUnlock()
 	return st.base.Dirs[dirID].Ext
 }
 
-// initTotals computes Total file counts and TotalSize for each directory.
-// FileStart:FileEnd already spans all descendant files, so no bottom-up aggregation needed.
 func (st *ServerTree) initTotals() {
 	for i := range st.base.Dirs {
 		d := &st.base.Dirs[i]
@@ -95,7 +94,6 @@ func (st *ServerTree) initTotals() {
 	}
 }
 
-// ApplyReport processes a single file status report using fileID (global file index).
 func (st *ServerTree) ApplyReport(fileID int64, workerID int, status protocol.TaskStatus, sha1 []byte) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -107,7 +105,6 @@ func (st *ServerTree) ApplyReport(fileID int64, workerID int, status protocol.Ta
 	file := &st.base.Files[fileID]
 	oldStatus := file.Ext.BestStatus
 
-	// Track per-worker SHA1 for conflict detection.
 	if sha1 != nil {
 		if st.fileHashes[fileID] == nil {
 			st.fileHashes[fileID] = make(map[int][]byte)
@@ -115,31 +112,20 @@ func (st *ServerTree) ApplyReport(fileID int64, workerID int, status protocol.Ta
 		st.fileHashes[fileID][workerID] = sha1
 	}
 
-	// Update ReportCount.
 	if st.fileHashes[fileID] != nil {
 		file.Ext.ReportCount = uint8(len(st.fileHashes[fileID]))
-	} else {
-		if file.Ext.ReportCount == 0 {
-			file.Ext.ReportCount = 1
-		}
+	} else if file.Ext.ReportCount == 0 {
+		file.Ext.ReportCount = 1
 	}
 
-	// Update BestStatus (take highest).
 	if status > file.Ext.BestStatus {
 		file.Ext.BestStatus = status
 	}
 
-	// Check for SHA1 conflicts.
 	file.Ext.HasConflict = st.hasConflictLocked(fileID)
-
-	// Get dirID from file
-	dirID := file.DirIdx
-
-	// Bubble dirExt delta up the ancestor chain.
-	st.bubbleDelta(dirID, oldStatus, file.Ext.BestStatus, file.Ext.HasConflict, file.Size)
+	st.bubbleDelta(file.DirIdx, oldStatus, file.Ext.BestStatus, file.Ext.HasConflict, file.Size)
 }
 
-// hasConflictLocked checks if a file has SHA1 conflicts among reporters.
 func (st *ServerTree) hasConflictLocked(fileID int64) bool {
 	hashes := st.fileHashes[fileID]
 	if len(hashes) < 2 {
@@ -158,7 +144,6 @@ func (st *ServerTree) hasConflictLocked(fileID int64) bool {
 	return false
 }
 
-// bubbleDelta updates dirExt along the ancestor chain when a file's status changes.
 func (st *ServerTree) bubbleDelta(dirID int32, oldStatus, newStatus protocol.TaskStatus, hasConflict bool, fileSize int64) {
 	if oldStatus == newStatus {
 		return
@@ -202,8 +187,6 @@ func incrStatus(s *DirExt, status protocol.TaskStatus, size int64) {
 	}
 }
 
-// recomputeAllStatsLocked rebuilds all dirExt from scratch.
-// Used after bulk recovery to ensure consistency. Caller must hold write lock.
 func (st *ServerTree) recomputeAllStatsLocked() {
 	for i := range st.base.Dirs {
 		st.base.Dirs[i].Ext = DirExt{}
@@ -224,14 +207,12 @@ func (st *ServerTree) recomputeAllStatsLocked() {
 	}
 }
 
-// ChildStats pairs a directory name with its stats.
 type ChildStats struct {
 	Name  string `json:"name"`
 	DirID int32  `json:"dir_id"`
 	Stats DirExt `json:"stats"`
 }
 
-// ChildDirStats returns stats for all immediate subdirectories of a directory.
 func (st *ServerTree) ChildDirStats(dirID int32) []ChildStats {
 	st.mu.RLock()
 	defer st.mu.RUnlock()
@@ -248,7 +229,6 @@ func (st *ServerTree) ChildDirStats(dirID int32) []ChildStats {
 	return result
 }
 
-// TreeNode is a frontend-friendly directory tree node.
 type TreeNode struct {
 	Name            string     `json:"name"`
 	DirID           int32      `json:"dir_id"`
@@ -267,7 +247,6 @@ type TreeNode struct {
 	Children        []TreeNode `json:"children,omitempty"`
 }
 
-// BuildTreeNodes returns the sub-directory tree under dirID, up to maxDepth levels.
 func (st *ServerTree) BuildTreeNodes(dirID int32, maxDepth int) []TreeNode {
 	st.mu.RLock()
 	defer st.mu.RUnlock()
@@ -303,7 +282,6 @@ func (st *ServerTree) buildTreeNodesLocked(dirID int32, maxDepth, depth int) []T
 	return result
 }
 
-// StatsToOverview converts root DirExt into the overview the frontend expects.
 func StatsToOverview(s DirExt) map[string]any {
 	return map[string]any{
 		"total_files":      s.Total,

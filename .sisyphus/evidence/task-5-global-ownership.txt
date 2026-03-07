@@ -1,0 +1,69 @@
+Task 5 - Backend Global Ownership Evidence
+=========================================
+
+Date: 2026-03-07
+Worktree: /mnt/c/Users/Lin/GolandProjects/myrient-horizon-worktree
+
+Search: grep '^var\s+.*\*' across backend Go files
+Matches:
+- internal/server/tree.go:46 -> var Tree *ServerTree
+- internal/server/db.go:66 -> var DB *Store
+- internal/worker/reporter.go:28 -> var Reporter *reporter
+- internal/worker/task.go:31 -> var iTree *mt.Tree[dirExt, fileExt]
+- internal/worker/verify.go:16 -> var verifyTaskCh = make(chan *Task, 16384)
+
+Server package-level var inventory
+Search: grep '^var\s+' in internal/server
+Matches:
+- internal/server/db.go:66 -> var DB *Store
+- internal/server/tree.go:46 -> var Tree *ServerTree
+- internal/server/wsrpc.go:18 -> var upgrader = websocket.Upgrader{...}
+
+Required file reads
+- internal/server/db.go
+  - `DB` is a package global store pointer consumed by handler and websocket code
+  - `Store` wraps the pgx pool; shutdown is already driven from `cmd/server/main.go`
+- internal/server/tree.go
+  - `Tree` is a package global server tree pointer
+  - runtime state lives in `ServerTree.base`, directory/file ext fields, and `fileHashes`
+
+Worker pattern comparison
+- internal/worker/downloader.go
+  - package-owned singleton uses `sync.Once` and `InitDownloader(...)`
+- internal/worker/reporter.go
+  - package-level singleton pointer plus `Run(...)` loop owns long-lived runtime state
+- internal/worker/worker.go
+  - bootstrap logic is centralized and called from `cmd/worker/main.go`
+
+Server call-site evidence
+- `DB` consumers
+  - internal/server/handler.go:90,110,135,148,269
+  - internal/server/wsrpc.go:93,161,248,278
+- `Tree` consumers
+  - internal/server/handler.go:184,198,206,213,215,248,253,298,305,317,332
+  - internal/server/wsrpc.go:252
+- Bootstrap owner
+  - cmd/server/main.go initializes both `DB` and `Tree`
+
+Disposition decisions
+- internal/server/db.go:66 `var DB *Store` -> align
+  - migrate to worker-style `InitDB`/`GetDB`
+  - keep `cmd/server/main.go` as the single bootstrap/shutdown owner
+- internal/server/tree.go:46 `var Tree *ServerTree` -> align
+  - migrate to worker-style `InitTree`/`GetTree`
+  - keep `cmd/server/main.go` as the single bootstrap owner
+- internal/server/wsrpc.go:18 `var upgrader = websocket.Upgrader{...}` -> exception
+  - immutable package config, not a mutable runtime owner
+- internal/server/wsrpc.go `Hub` -> exception
+  - constructor-owned runtime owner injected from `cmd/server/main.go`
+- internal/server/handler.go `Handler` -> exception
+  - constructor-owned adapter, no package state
+
+Outcome
+- Ownership plan recorded in `.sisyphus/contract/ownership-map.md`
+- Raw server globals are now classified with one explicit disposition each
+- Guardrail established: no new shared backend package state outside worker-style ownership or documented immutable/constructor exceptions
+
+Verification
+- `lsp_diagnostics` on documentation files is not applicable
+- build not rerun for this task because no Go source was intentionally changed; baseline evidence from task 1 already records `go build ./...` timing out after 120s

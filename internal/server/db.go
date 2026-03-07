@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -57,16 +58,31 @@ CREATE TABLE IF NOT EXISTS archived (
 );
 `
 
-// Store wraps the PostgreSQL connection pool and provides data access methods.
 type Store struct {
 	pool *pgxpool.Pool
 }
 
-// DB is the global Store instance.
-var DB *Store
+var (
+	dbInstance *Store
+	dbInitErr  error
+	dbOnce     sync.Once
+)
 
-// New creates a new Store and runs schema migration.
-func New(ctx context.Context, connString string) (*Store, error) {
+func InitDB(ctx context.Context, connString string) (*Store, error) {
+	dbOnce.Do(func() {
+		dbInstance, dbInitErr = NewStore(ctx, connString)
+	})
+	return dbInstance, dbInitErr
+}
+
+func GetDB() *Store {
+	if dbInstance == nil {
+		panic("server: DB not initialized")
+	}
+	return dbInstance
+}
+
+func NewStore(ctx context.Context, connString string) (*Store, error) {
 	pool, err := pgxpool.New(ctx, connString)
 	if err != nil {
 		return nil, fmt.Errorf("connect to db: %w", err)
@@ -82,21 +98,17 @@ func New(ctx context.Context, connString string) (*Store, error) {
 	return &Store{pool: pool}, nil
 }
 
-// Close shuts down the connection pool.
 func (s *Store) Close() {
 	s.pool.Close()
 }
 
-// ---- Workers ----
-
 type Worker struct {
 	ID        int       `json:"id"`
 	Name      string    `json:"name"`
-	Config    []byte    `json:"config"` // raw JSONB
+	Config    []byte    `json:"config"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// RegisterWorker creates a new worker, returning the ID and plaintext key.
 func (s *Store) RegisterWorker(ctx context.Context, name string) (id int, key string, err error) {
 	raw := make([]byte, 16)
 	if _, err = rand.Read(raw); err != nil {
@@ -119,8 +131,6 @@ func (s *Store) RegisterWorker(ctx context.Context, name string) (id int, key st
 	return id, key, nil
 }
 
-// AuthenticateWorker finds a worker by verifying the plaintext key against stored hashes.
-// Returns the worker ID or 0 if not found.
 func (s *Store) AuthenticateWorker(ctx context.Context, key string) (int, error) {
 	rows, err := s.pool.Query(ctx, `SELECT id, key_hash FROM workers`)
 	if err != nil {
@@ -140,7 +150,6 @@ func (s *Store) AuthenticateWorker(ctx context.Context, key string) (int, error)
 	return 0, nil
 }
 
-// GetWorker returns a single worker by ID.
 func (s *Store) GetWorker(ctx context.Context, id int) (*Worker, error) {
 	w := &Worker{}
 	err := s.pool.QueryRow(ctx,
@@ -152,7 +161,6 @@ func (s *Store) GetWorker(ctx context.Context, id int) (*Worker, error) {
 	return w, nil
 }
 
-// ListWorkers returns all registered workers.
 func (s *Store) ListWorkers(ctx context.Context) ([]Worker, error) {
 	rows, err := s.pool.Query(ctx, `SELECT id, name, config, created_at FROM workers ORDER BY id`)
 	if err != nil {
@@ -171,14 +179,11 @@ func (s *Store) ListWorkers(ctx context.Context) ([]Worker, error) {
 	return workers, nil
 }
 
-// UpdateWorkerConfig sets the JSONB config for a worker.
 func (s *Store) UpdateWorkerConfig(ctx context.Context, workerID int, config []byte) error {
 	_, err := s.pool.Exec(ctx,
 		`UPDATE workers SET config = $1 WHERE id = $2`, config, workerID)
 	return err
 }
-
-// ---- Item Status ----
 
 type ItemStatus struct {
 	WorkerID int
@@ -188,7 +193,6 @@ type ItemStatus struct {
 	CRC32    []byte
 }
 
-// UpsertItemStatus inserts or updates an item status record.
 func (s *Store) UpsertItemStatus(ctx context.Context, item *ItemStatus) error {
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO item_status (worker_id, file_id, status, sha1, crc32)
@@ -199,7 +203,6 @@ func (s *Store) UpsertItemStatus(ctx context.Context, item *ItemStatus) error {
 	return err
 }
 
-// ScanAllItemStatusByWorker streams all item_status rows for a specific worker.
 func (s *Store) ScanAllItemStatusByWorker(ctx context.Context, workerID int, fn func(*ItemStatus) error) error {
 	rows, err := s.pool.Query(ctx,
 		`SELECT worker_id, file_id, status, sha1, crc32 FROM item_status WHERE worker_id = $1`, workerID)
@@ -220,8 +223,6 @@ func (s *Store) ScanAllItemStatusByWorker(ctx context.Context, workerID int, fn 
 	return rows.Err()
 }
 
-// ---- Reclaims ----
-
 type Reclaim struct {
 	ID        int       `json:"id"`
 	WorkerID  int       `json:"worker_id"`
@@ -230,7 +231,6 @@ type Reclaim struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// GetReclaimsByWorker returns all reclaims for a specific worker.
 func (s *Store) GetReclaimsByWorker(ctx context.Context, workerID int) ([]Reclaim, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, worker_id, dir_id, is_black, created_at FROM reclaims WHERE worker_id = $1 ORDER BY id`,
@@ -251,7 +251,6 @@ func (s *Store) GetReclaimsByWorker(ctx context.Context, workerID int) ([]Reclai
 	return reclaims, nil
 }
 
-// InsertReclaim creates a new reclaim record.
 func (s *Store) InsertReclaim(ctx context.Context, workerID, dirID int, isBlack bool) error {
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO reclaims (worker_id, dir_id, is_black) VALUES ($1, $2, $3)`,
@@ -259,14 +258,11 @@ func (s *Store) InsertReclaim(ctx context.Context, workerID, dirID int, isBlack 
 	return err
 }
 
-// DeleteReclaim removes a reclaim record by ID.
 func (s *Store) DeleteReclaim(ctx context.Context, reclaimID int) error {
 	_, err := s.pool.Exec(ctx,
 		`DELETE FROM reclaims WHERE id = $1`, reclaimID)
 	return err
 }
-
-// ---- Archive Status ----
 
 type ArchiveStatus struct {
 	ID        int       `json:"id"`
@@ -276,7 +272,6 @@ type ArchiveStatus struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// GetArchiveStatusByWorker returns all archive status for a specific worker.
 func (s *Store) GetArchiveStatusByWorker(ctx context.Context, workerID int) ([]ArchiveStatus, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, worker_id, file_id, archive_id, created_at FROM archive_status WHERE worker_id = $1 ORDER BY id`,
@@ -297,15 +292,12 @@ func (s *Store) GetArchiveStatusByWorker(ctx context.Context, workerID int) ([]A
 	return statuses, nil
 }
 
-// ---- Archived ----
-
 type Archived struct {
 	ID        int       `json:"id"`
 	RawJSON   []byte    `json:"raw_json"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// InsertArchived creates a new archived record.
 func (s *Store) InsertArchived(ctx context.Context, rawJSON []byte) (int, error) {
 	var id int
 	err := s.pool.QueryRow(ctx,
@@ -314,7 +306,6 @@ func (s *Store) InsertArchived(ctx context.Context, rawJSON []byte) (int, error)
 	return id, err
 }
 
-// GetArchivedByID returns an archived record by ID.
 func (s *Store) GetArchivedByID(ctx context.Context, id int) (*Archived, error) {
 	a := &Archived{}
 	err := s.pool.QueryRow(ctx,

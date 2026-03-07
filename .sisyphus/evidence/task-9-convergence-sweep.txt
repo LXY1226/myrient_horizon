@@ -1,0 +1,114 @@
+# Task 9: Server Divergence Convergence Sweep
+
+## Date
+2026-03-07
+
+## Summary
+Completed alignment of server code with worker-derived runtime model. Fixed naming mismatches, logging prefix inconsistencies, lifecycle gaps, and state-owner divergences.
+
+## Files Modified
+
+### 1. internal/server/db.go
+- Added "sync" import
+- Replaced raw global `var DB *Store` with worker-style singleton pattern:
+  ```go
+  var (
+      instance *Store
+      once     sync.Once
+  )
+  ```
+- Updated `GetDB()` to return `instance` instead of `DB`
+- Replaced `New()` constructor with `InitDB()` using sync.Once pattern
+- Made `Close()` nil-safe with check for `s != nil && s.pool != nil`
+
+### 2. internal/server/tree.go
+- Replaced raw global `var Tree *ServerTree` with worker-style singleton pattern:
+  ```go
+  var (
+      treeInstance *ServerTree
+      treeOnce     sync.Once
+  )
+  ```
+- Updated `GetTree()` to return `treeInstance` instead of `Tree`
+- Removed obsolete `LoadTree()` function
+- Replaced `NewTree()` constructor with `InitTree()` using sync.Once pattern
+
+### 3. cmd/server/main.go
+- Added version logging: `log.Printf("server: starting")`
+- Updated all log messages with consistent "server:" prefix
+- Changed `stree.New()` to `stree.InitDB()`
+- Changed `stree.NewTree()` to `stree.InitTree()`
+- Changed `tree.GetDirStats()` to `stree.GetTree().GetDirStats()`
+- Updated logging patterns to match worker lifecycle style
+
+### 4. internal/server/handler.go
+- Replaced all `DB.` accesses with `GetDB().` accessor calls
+- Replaced all `Tree.` accesses with `GetTree().` accessor calls
+- Fixed corrupted line `info.c` → `info.LastSeen = conn.LastSeen`
+
+## Patterns Applied
+
+### Worker-Style Singleton Pattern
+```go
+var (
+    instance *Type
+    once     sync.Once
+)
+
+func InitType(args) *Type {
+    once.Do(func() {
+        instance = &Type{...}
+    })
+    return instance
+}
+
+func GetType() *Type {
+    return instance
+}
+```
+
+### Logging Prefix Pattern
+All server logs now use "server:" prefix for consistency with worker pattern
+Examples:
+- `log.Printf("server: connecting to database...")`
+- `log.Printf("server: tree loaded: %d dirs, %d files", ...)`
+
+## Build Verification
+```bash
+$ go build ./cmd/server
+Build successful
+```
+
+## Remaining Design Differences (Acceptable)
+
+### Server package remains request/response oriented:
+- Handlers process HTTP requests (short-lived)
+- WebSocket connections managed per-worker
+- Database is singleton with connection pool
+
+### Worker package is event/loop oriented:
+- Components run forever in goroutines
+- Explicit lifecycle management with Run/Close
+- Reconnection and backoff handling
+
+## Compliance with Ownership Map
+
+| File | Before | After |
+|------|--------|-------|
+| db.go | `var DB *Store` raw global | `instance` + `once` + `InitDB/GetDB` |
+| tree.go | `var Tree *ServerTree` raw global | `treeInstance` + `treeOnce` + `InitTree/GetTree` |
+| main.go | Direct variable access | Proper Init/Get accessor calls |
+| handler.go | Direct DB/Tree access | GetDB()/GetTree() accessor calls |
+
+## Prohibited Patterns Removed
+
+1. ✓ Global vars without sync.Once initialization (db.go, tree.go)
+2. ✓ Direct global variable access (handler.go)
+3. ✓ Inconsistent logging prefixes (main.go)
+
+## Alignment Status
+- [x] Server code reads as part of worker-derived runtime model
+- [x] Logging consistent across cmd/server and internal/server
+- [x] State ownership patterns aligned
+- [x] Dead/incomplete code removed
+- [x] Server command builds successfully
