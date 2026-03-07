@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"context"
 	"log"
 	"myrient-horizon/internal/worker/config"
 	"net/http"
@@ -35,6 +36,14 @@ var Reporter *reporter
 // Run connects to the server WebSocket and starts the report loop.
 // Pattern: Exponential backoff reconnections with max cap (30s).
 // Never returns - runs until process termination.
+// Run starts the reporter loop with context support for cancellation.
+// Called by cmd/worker/main.go with context.
+func (r *reporter) RunContext(ctx context.Context) {
+	// TODO: Use ctx for cancellation
+	wsURL := config.Global.ServerURL
+	r.Run(wsURL, config.Global.Key)
+}
+
 func (r *reporter) Run(wsURL, workerKey string) {
 	if len(wsURL) > 4 && wsURL[:4] == "http" {
 		wsURL = "ws" + wsURL[4:]
@@ -84,7 +93,8 @@ func (r *reporter) report(conn *websocket.Conn, closed *bool) {
 			r.verifiedTasks = nil
 		}
 		r.vMu.Unlock()
-		downloading := downloader.CurrentTask()
+		downloading := Downloader.CurrentTask()
+
 		report := protocol.PingMsg{
 			Version:     r.lastSentVer,
 			Verified:    r.lastSent,
@@ -109,11 +119,26 @@ func (r *reporter) report(conn *websocket.Conn, closed *bool) {
 		}
 	}
 }
-func (r *reporter) Close() *sync.WaitGroup {
+
+// closeImpl is the internal implementation of graceful shutdown.
+func (r *reporter) closeImpl() *sync.WaitGroup {
 	r.closing = &sync.WaitGroup{}
 	r.closing.Add(1)
 	r.reportTick.Reset(10 * time.Millisecond)
 	return r.closing
+}
+
+// Close initiates graceful shutdown without context (for backward compatibility).
+// Called by cmd/verifier/main.go.
+func (r *reporter) Close() *sync.WaitGroup {
+	return r.closeImpl()
+}
+
+// CloseWithContext initiates graceful shutdown with context (for server alignment).
+// Called by cmd/worker/main.go.
+func (r *reporter) CloseContext(ctx context.Context) *sync.WaitGroup {
+	_ = ctx // Context reserved for future timeout support
+	return r.closeImpl()
 }
 
 // readLoop reads messages from the server and dispatches them.
@@ -133,12 +158,6 @@ func (r *reporter) readLoop(conn *websocket.Conn) {
 		}
 
 		switch msgType {
-		//case "config_update":
-		//	// do nothing
-		//	//var msg protocol.ConfigUpdateMsg
-		//	//if json.Unmarshal(body, &msg) == nil && r.OnConfigUpdate != nil {
-		//	//	r.OnConfigUpdate(msg.Config)
-		//	//}
 		case protocol.MessagePong:
 			msg, err := protocol.UnmarshalMessage[protocol.PongMsg](body)
 			if err != nil {
@@ -192,4 +211,24 @@ func (r *reporter) PushVerified(t *Task, sha1, crc32 []byte) {
 	r.vMu.Lock()
 	defer r.vMu.Unlock()
 	r.verified = append(r.verified, report)
+}
+
+// initReporter initializes the Reporter global from config.Global.
+// Pattern: Fail-fast bootstrap - validates prerequisites and panics on invalid state.
+// Must be called after EnsureConfig() sets config.Global.
+func initReporter() {
+	if config.Global.ServerURL == "" {
+		log.Fatal("reporter: ServerURL is required but not configured")
+	}
+if config.Global.Key == "" {
+		log.Fatal("reporter: worker Key is required but not configured")
+	}
+	Reporter = &reporter{}
+}
+
+// InitReporter initializes the Reporter global from config.Global.
+// Pattern: Fail-fast bootstrap - validates prerequisites and panics on invalid state.
+// Must be called after EnsureConfig() sets config.Global.
+func InitReporter() {
+	initReporter()
 }

@@ -25,6 +25,10 @@ type WorkerConfig struct {
 	HeartBeatIntv int      `json:"heart_beat_interval"`
 }
 
+// Global is the worker configuration singleton (Pattern 1: Direct global).
+// Set during bootstrap by EnsureConfig() and accessed throughout the worker.
+// Server alignment note: Server-side code uses Pattern 2 (Init/Get), but
+// workers use this direct global pattern for simplicity in single-process setup.
 var Global WorkerConfig
 
 // applyDefaults fills zero-value fields with sensible defaults.

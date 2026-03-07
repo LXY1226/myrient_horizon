@@ -6,7 +6,9 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func getDiskFreeGB(path string) float64 {
+// GetDiskFreeGB returns the free disk space in GB for the given path.
+// Server alignment: Shared utility function for disk monitoring.
+func GetDiskFreeGB(path string) float64 {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return 0

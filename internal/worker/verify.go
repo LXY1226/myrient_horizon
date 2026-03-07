@@ -2,6 +2,7 @@ package worker
 
 import (
 	"archive/zip"
+	"context"
 	"crypto/sha1"
 	"encoding/binary"
 	"fmt"
@@ -11,16 +12,117 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+
+	"myrient-horizon/internal/worker/config"
 )
 
-var verifyTaskCh = make(chan *Task, 16384)
+// verifierRuntime is the runtime owner for file verification.
+// It manages a pool of workers that process verification tasks.
+// Replaces the old verifyTaskCh/RunVerifier function model.
+type verifierRuntime struct {
+	mu          sync.Mutex
+	concurrency int
+	count       int
+	taskCh      chan *Task
+	wg          sync.WaitGroup
+}
 
-func RunVerifier() {
-	for task := range verifyTaskCh {
-		task.Verify()
+// Verifier is the package-global verifier runtime owner.
+// Initialized by InitVerifier() and used by commands.
+var Verifier *verifierRuntime
+
+// InitVerifier initializes the package-global Verifier runtime owner.
+// Pattern: Fail-fast bootstrap (no return value).
+// Must be called once before accessing Verifier.
+//
+// Bootstrap behavior:
+//   - Reads config.Global for settings
+//   - Ensures Reporter is initialized (panics if not)
+//   - Seeds concurrency default of 2 (from old cmd/worker/main.go)
+//   - Panics immediately on invalid state
+func InitVerifier() {
+	if config.Global.Key == "" {
+		log.Fatal("InitVerifier: config.Global not loaded (Key is empty)")
+	}
+	if Reporter == nil {
+		log.Fatal("InitVerifier: Reporter not initialized")
+	}
+
+	Verifier = &verifierRuntime{
+		concurrency: 2, // Default from old cmd/worker/main.go constant
+		taskCh:      make(chan *Task, 16384),
 	}
 }
 
+// Submit queues a task for verification.
+// Non-blocking - sends to buffered channel.
+// Must only be called after InitVerifier().
+func (v *verifierRuntime) Submit(task *Task) {
+	v.taskCh <- task
+}
+
+// SetConcurrency updates the verification concurrency limit.
+// Server alignment: Dynamic configuration updates from server.
+func (v *verifierRuntime) SetConcurrency(n int) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.concurrency = n
+}
+
+// Count returns the current number of pending verification tasks.
+// Server alignment: Status reporting for heartbeat.
+func (v *verifierRuntime) Count() int {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.count
+}
+
+// Run starts the verifier worker loop with the specified concurrency.
+// Pattern: Context-aware long-running loop (server alignment).
+// Respects context cancellation for graceful shutdown.
+// Spawns 'concurrency' workers that process tasks from the channel.
+func (v *verifierRuntime) Run(ctx context.Context) {
+	v.mu.Lock()
+	concurrency := v.concurrency
+	v.mu.Unlock()
+
+	// Start worker pool
+	for i := 0; i < concurrency; i++ {
+		v.wg.Add(1)
+		go v.worker(ctx)
+	}
+
+	// Wait for context cancellation
+	<-ctx.Done()
+
+	// Close channel to signal workers to stop
+	close(v.taskCh)
+
+	// Wait for all workers to finish
+	v.wg.Wait()
+}
+
+// worker is the per-worker goroutine that processes tasks.
+func (v *verifierRuntime) worker(ctx context.Context) {
+	defer v.wg.Done()
+	for task := range v.taskCh {
+		v.mu.Lock()
+		v.count++
+		v.mu.Unlock()
+
+		task.Verify()
+
+		v.mu.Lock()
+		v.count--
+		v.mu.Unlock()
+	}
+}
+
+// Verify performs hash verification on the downloaded file.
+// Routes verified results through Reporter.PushVerified.
+// This is the core verification primitive - the Verifier owner
+// orchestrates calling this method, but the logic stays here.
 func (t *Task) Verify() error {
 	f, err := os.Open(t.DownloadingPath())
 	if err != nil {
