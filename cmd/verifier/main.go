@@ -1,10 +1,10 @@
 package main
 
 import (
-	"bufio"
-	"context"
-	"log"
-	"myrient-horizon/internal/worker"
+"bufio"
+"context"
+"log"
+"myrient-horizon/internal/worker"
 	"myrient-horizon/internal/worker/config"
 	"os"
 	"os/signal"
@@ -36,6 +36,10 @@ func main() {
 	config.Global = *cfg
 	log.Printf("Loaded config: worker %s", cfg.Name)
 
+	// Bootstrap: Initialize reporter and verifier
+	worker.InitReporter()
+	worker.InitVerifier()
+
 	scanDir := cfg.DownloadDir
 	if len(os.Args) > 1 {
 		scanDir = os.Args[1]
@@ -51,7 +55,10 @@ func main() {
 	log.Printf("Scan directory: %s", scanDir)
 
 	worker.LoadTree(cfg.TreeFile)
-	worker.Reporter.Run(cfg.ServerURL+"/ws", cfg.Key)
+
+	// Start reporter in goroutine (non-blocking)
+	go worker.Reporter.Run(cfg.ServerURL+"/ws", cfg.Key)
+
 	badReport, err := os.OpenFile("bad_report.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		log.Fatalf("Failed to open bad_report.log: %v", err)
