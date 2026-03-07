@@ -45,20 +45,17 @@ type ServerTree struct {
 // Tree is the global ServerTree instance.
 var Tree *ServerTree
 
-func LoadTree(path string) error {
+func LoadTree(path string) (*ServerTree, error) {
 	tree, err := mt.LoadFromFile[DirExt, FileExt](path)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	Tree = &ServerTree{
-		base:       tree,
-		fileHashes: make([]map[int][]byte, len(tree.Files)),
-	}
-	return nil
+	Tree = NewTree(tree)
+	return Tree, nil
 }
 
-// New creates a ServerTree from a base tree.
-func New(base *mt.Tree[DirExt, FileExt]) *ServerTree {
+// NewTree creates a ServerTree from a base tree.
+func NewTree(base *mt.Tree[DirExt, FileExt]) *ServerTree {
 	st := &ServerTree{
 		base:       base,
 		fileHashes: make([]map[int][]byte, len(base.Files)),
@@ -118,10 +115,8 @@ func (st *ServerTree) ApplyReport(fileID int64, workerID int, status protocol.Ta
 	// Update ReportCount.
 	if st.fileHashes[fileID] != nil {
 		file.Ext.ReportCount = uint8(len(st.fileHashes[fileID]))
-	} else {
-		if file.Ext.ReportCount == 0 {
-			file.Ext.ReportCount = 1
-		}
+	} else if file.Ext.ReportCount == 0 {
+		file.Ext.ReportCount = 1
 	}
 
 	// Update BestStatus (take highest).
@@ -131,12 +126,8 @@ func (st *ServerTree) ApplyReport(fileID int64, workerID int, status protocol.Ta
 
 	// Check for SHA1 conflicts.
 	file.Ext.HasConflict = st.hasConflictLocked(fileID)
-
-	// Get dirID from file
-	dirID := file.DirIdx
-
 	// Bubble dirExt delta up the ancestor chain.
-	st.bubbleDelta(dirID, oldStatus, file.Ext.BestStatus, file.Ext.HasConflict, file.Size)
+	st.bubbleDelta(file.DirIdx, oldStatus, file.Ext.BestStatus, file.Ext.HasConflict, file.Size)
 }
 
 // hasConflictLocked checks if a file has SHA1 conflicts among reporters.

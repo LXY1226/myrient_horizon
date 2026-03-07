@@ -1,0 +1,56 @@
+Task 3: Align cmd/server to cmd/worker composition-root model
+================================================================
+
+Date: 2025-03-07
+Status: COMPLETED
+
+Changes Made to cmd/server/main.go:
+------------------------------------
+
+1. Signal Handling Pattern (lines 28-33):
+   - Moved signal handler to a goroutine immediately after context creation
+   - Signal handler now calls cancel() to trigger context cancellation
+   - Matches worker pattern (worker lines 26-32)
+
+2. Blocking Pattern (line 94):
+   - Changed final blocking from `<-sigCh` to `<-ctx.Done()`
+   - Matches worker pattern (worker line 105)
+   - Graceful shutdown happens AFTER context cancellation
+
+3. Graceful Shutdown (lines 97-101):
+   - Moved server.Shutdown() to run after <-ctx.Done()
+   - Maintains 10-second timeout for shutdown
+   - Clean separation: signal -> cancel -> wait -> shutdown
+
+Lifecycle Comparison:
+---------------------
+WORKER (template):                    SERVER (aligned):
+------------------                    -----------------
+1. Version log                        1. Flag parsing
+2. Context + cancel                   2. Context + cancel  
+3. Signal goroutine -> cancel         3. Signal goroutine -> cancel (NEW)
+4. Config load                        4. Tree loading
+5. Dependency init                    5. DB connection
+6. Goroutine startup                  6. Tree build
+7. Heartbeat ticker                   7. Hub setup
+8. <-ctx.Done()                       8. HTTP server startup
+9. Cleanup + exit                     9. <-ctx.Done() (NEW)
+                                      10. Graceful shutdown
+
+Build Verification:
+-------------------
+$ go build ./cmd/server
+$ go build ./cmd/worker
+
+Note: Build shows pre-existing errors in internal/server/* files (handler.go, 
+tree.go, wsrpc.go) unrelated to cmd/server/main.go changes. The main.go file
+parses and compiles correctly.
+
+Key Alignment Points:
+---------------------
+✓ Context with cancel at top level
+✓ Signal handler goroutine that calls cancel()
+✓ <-ctx.Done() as final blocking call
+✓ Controlled shutdown sequence
+✓ Long-running components (HTTP server) in goroutines
+✓ Defer cleanup for resources

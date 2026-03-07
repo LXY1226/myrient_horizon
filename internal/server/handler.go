@@ -164,7 +164,7 @@ func (h *Handler) handleListWorkers(w http.ResponseWriter, r *http.Request) {
 		info := workerInfo{Worker: wk}
 		if conn, ok := conns[wk.ID]; ok {
 			info.Online = true
-			info.Heartbeat, _ = conn.GetWorkerStatus()
+			info.LastSeen = conn.LastSeen
 			info.Heartbeat, _ = conn.GetWorkerStatus()
 		}
 		result[i] = info

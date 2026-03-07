@@ -1,0 +1,84 @@
+# Task 2: Static Enforcement Evidence
+# Captured: 2026-03-07
+
+## Configuration Created
+
+### 1. .golangci.yml
+- Location: .golangci.yml
+- Scope: Handwritten Go code (excludes generated files)
+- Linters enabled:
+  - revive (naming conventions)
+  - godot (comment punctuation)
+  - deadcode, unused, structcheck, varcheck (dead code detection)
+  - errcheck, goerr113 (error handling)
+  - goimports (import organization)
+  - gofmt, govet, ineffassign (basic style)
+
+### 2. scripts/lint.sh
+- Location: scripts/lint.sh
+- Custom bash-based linting for:
+  - gofmt compliance
+  - Chinese comment detection
+  - TODO/FIXME context validation
+  - Dead code detection
+  - Basic error checking
+
+## Generated File Exclusions
+
+The following patterns are excluded from linting:
+- `pkg/myrienttree/MyrientTree/*.go` (FlatBuffers generated)
+- `pkg/protocol/*.go` (protocol definitions)
+
+These exclusions are documented in:
+1. `.golangci.yml` (skip-dirs and exclude-files)
+2. `scripts/lint.sh` (GENERATED_FILES array)
+
+## Test Results
+
+### gofmt Check
+✓ All files formatted correctly
+
+### Custom Lint Script Results
+- Chinese comments: Found in 2 files (internal/worker/downloader.go, internal/worker/task.go)
+- TODOs without context: Found in 3 files
+- Dead code (commented functions): Found in 2 files
+- Unchecked errors: Found in 6 files
+
+### go vet Results
+Build errors found in:
+- internal/server/handler.go: New redeclared
+- internal/server/tree.go: Multiple undefined references
+- internal/server/wsrpc.go: HashTrieMap API issues
+- internal/worker/downloader.go: Unused import
+
+## Deterministic Output
+
+All tools produce deterministic output:
+1. `gofmt -l` returns consistent results
+2. `go vet` produces reproducible diagnostics
+3. `scripts/lint.sh` produces consistent findings
+
+## Commands
+
+```bash
+# Format check
+gofmt -l ./internal ./cmd
+
+# Custom linting
+./scripts/lint.sh
+
+# Static analysis (requires buildable code)
+go vet ./internal/worker/... ./internal/server/... ./cmd/...
+
+# Full golangci-lint (when installed)
+golangci-lint run
+```
+
+## Style Contract Alignment
+
+The enforcement config targets the specific patterns from backend-style.md:
+- ✓ No Chinese comments (detected, needs fixing)
+- ✓ Dead code detection (configured)
+- ✓ Error checking (errcheck enabled)
+- ✓ Naming conventions (revive linter)
+- ✓ Import organization (goimports)

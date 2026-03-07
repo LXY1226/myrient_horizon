@@ -1,0 +1,16 @@
+task: 7 server state ownership
+status: complete
+files:
+- internal/server/db.go
+- internal/server/tree.go
+- internal/server/handler.go
+- internal/server/wsrpc.go
+- cmd/server/main.go
+checks:
+- gofmt -w internal/server/db.go internal/server/tree.go internal/server/handler.go internal/server/wsrpc.go cmd/server/main.go
+- go build ./cmd/server
+notes:
+- aligned DB ownership to InitDB/GetDB
+- aligned Tree ownership to InitTree/GetTree
+- added hub Run/Close lifecycle and ws:/hub: logging
+- lsp_diagnostics unavailable in this workspace: no active builds contain worktree files

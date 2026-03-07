@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"sync"
@@ -11,7 +12,6 @@ import (
 
 	"myrient-horizon/pkg/protocol"
 
-	"github.com/go4org/hashtriemap"
 	"github.com/gorilla/websocket"
 )
 
@@ -19,65 +19,89 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
-// WorkerConn represents an active WebSocket connection from a worker.
 type WorkerConn struct {
 	WorkerID int
 	Conn     *websocket.Conn
-	//cancel   context.CancelFunc
-	wMutex sync.Mutex
+	cancel   context.CancelFunc
 
-	//wmu          sync.Mutex
-	//mu           sync.Mutex
+	writeMu sync.Mutex
+	stateMu sync.RWMutex
+
 	WorkerStatus *protocol.WorkerStatus
 	LastSeen     time.Time
 }
 
-// GetWorkerStatus returns the latest worker status and last seen time.
 func (wc *WorkerConn) GetWorkerStatus() (*protocol.WorkerStatus, time.Time) {
+	wc.stateMu.RLock()
+	defer wc.stateMu.RUnlock()
 	return wc.WorkerStatus, wc.LastSeen
 }
 
-// Send sends a framed protocol message to the worker.
-func (wc *WorkerConn) Send(data []byte) error {
-	wc.wMutex.Lock()
-	defer wc.wMutex.Unlock()
-	return wc.Conn.WriteMessage(websocket.BinaryMessage, data)
+func (wc *WorkerConn) close(code int, text string) {
+	wc.writeMu.Lock()
+	defer wc.writeMu.Unlock()
+	_ = wc.Conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(code, text))
+	_ = wc.Conn.Close()
 }
 
-// Hub manages all worker WebSocket connections.
 type Hub struct {
-	mu    sync.RWMutex
-	conns hashtriemap.HashTrieMap[int, *WorkerConn]
+	mu        sync.RWMutex
+	conns     map[int]*WorkerConn
+	closeOnce sync.Once
 
 	WorkerVersion     string
 	WorkerDownloadURL string
 	WorkerSHA256      string
 }
 
-// NewHub creates a new WebSocket hub.
 func NewHub() *Hub {
-	return &Hub{}
+	return &Hub{conns: make(map[int]*WorkerConn)}
 }
 
-// GetConn returns the active connection for a worker, if any.
+func (h *Hub) Run(ctx context.Context) {
+	log.Println("hub: run loop started")
+	<-ctx.Done()
+	log.Println("hub: run loop stopping")
+	h.Close()
+}
+
+func (h *Hub) Close() {
+	h.closeOnce.Do(func() {
+		h.mu.Lock()
+		conns := make(map[int]*WorkerConn, len(h.conns))
+		for workerID, conn := range h.conns {
+			conns[workerID] = conn
+		}
+		h.conns = make(map[int]*WorkerConn)
+		h.mu.Unlock()
+
+		log.Printf("hub: closing %d worker connection(s)", len(conns))
+		for workerID, conn := range conns {
+			if conn.cancel != nil {
+				conn.cancel()
+			}
+			conn.close(websocket.CloseGoingAway, "server shutdown")
+			log.Printf("hub: worker %d connection closed", workerID)
+		}
+	})
+}
+
 func (h *Hub) GetConn(workerID int) *WorkerConn {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.conns[workerID]
 }
 
-// AllConns returns a snapshot of all active connections.
 func (h *Hub) AllConns() map[int]*WorkerConn {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	cp := make(map[int]*WorkerConn, len(h.conns))
-	for k, v := range h.conns {
-		cp[k] = v
+	for workerID, conn := range h.conns {
+		cp[workerID] = conn
 	}
 	return cp
 }
 
-// HandleWS is the HTTP handler for WebSocket upgrade at /ws.
 func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 	key := ""
 	if auth := r.Header.Get("Authorization"); len(auth) > 7 && auth[:7] == "Bearer " {
@@ -109,7 +133,7 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUpgradeRequired)
-			json.NewEncoder(w).Encode(resp)
+			_ = json.NewEncoder(w).Encode(resp)
 			return
 		}
 	}
@@ -130,18 +154,19 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 
 	h.mu.Lock()
 	if old, ok := h.conns[workerID]; ok {
-		old.cancel()
-		old.Conn.WriteMessage(websocket.CloseMessage,
-			websocket.FormatCloseMessage(websocket.CloseGoingAway, "replaced by new connection"))
-		old.Conn.Close()
-		log.Printf("ws: worker %d old connection replaced", workerID)
+		if old.cancel != nil {
+			old.cancel()
+		}
+		old.close(websocket.CloseGoingAway, "replaced by new connection")
+		log.Printf("hub: worker %d old connection replaced", workerID)
 	}
 	h.conns[workerID] = wc
 	h.mu.Unlock()
 
 	log.Printf("ws: worker %d connected", workerID)
-
-	go h.sendInitialReclaims(ctx, wc)
+	if err := h.sendInitialReclaims(ctx, wc); err != nil {
+		log.Printf("ws: initial reclaim sync failed for worker %d: %v", workerID, err)
+	}
 
 	h.readLoop(ctx, wc)
 
@@ -150,38 +175,35 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		delete(h.conns, workerID)
 	}
 	h.mu.Unlock()
+
 	cancel()
-	conn.WriteMessage(websocket.CloseMessage,
-		websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
-	conn.Close()
+	wc.close(websocket.CloseNormalClosure, "")
 	log.Printf("ws: worker %d disconnected", workerID)
 }
 
-func (h *Hub) sendInitialReclaims(ctx context.Context, wc *WorkerConn) {
+func (h *Hub) sendInitialReclaims(ctx context.Context, wc *WorkerConn) error {
 	reclaims, err := DB.GetReclaimsByWorker(ctx, wc.WorkerID)
 	if err != nil {
-		log.Printf("ws: failed to load reclaims for worker %d: %v", wc.WorkerID, err)
-		return
+		return err
 	}
 	if len(reclaims) == 0 {
-		return
+		log.Printf("ws: worker %d has no reclaims to sync", wc.WorkerID)
+		return nil
 	}
 
 	reclaimList := make([]protocol.Reclaim, len(reclaims))
-	for i, r := range reclaims {
+	for i, reclaim := range reclaims {
 		reclaimList[i] = protocol.Reclaim{
-			DirID:   int32(r.DirID),
-			IsBlack: r.IsBlack,
+			DirID:   int32(reclaim.DirID),
+			IsBlack: reclaim.IsBlack,
 		}
 	}
 
-	msg := protocol.ReclaimsSyncMsg{
-		Type:     "reclaims_sync",
-		Reclaims: reclaimList,
+	if err := h.send(wc, protocol.MessageTaskSync, protocol.ReclaimsSyncMsg(reclaimList)); err != nil {
+		return err
 	}
-	if err := wc.Send(ctx, msg); err != nil {
-		log.Printf("ws: failed to send reclaims sync to worker %d: %v", wc.WorkerID, err)
-	}
+	log.Printf("ws: synced %d reclaim(s) to worker %d", len(reclaimList), wc.WorkerID)
+	return nil
 }
 
 func (h *Hub) readLoop(ctx context.Context, wc *WorkerConn) {
@@ -214,33 +236,32 @@ func (h *Hub) readLoop(ctx context.Context, wc *WorkerConn) {
 }
 
 func (h *Hub) handlePing(ctx context.Context, wc *WorkerConn, data []byte) {
-	var msg protocol.PingMsg
-	if err := json.Unmarshal(data, &msg); err != nil {
+	msg, err := protocol.UnmarshalMessage[protocol.PingMsg](data)
+	if err != nil {
 		log.Printf("ws: bad ping from worker %d: %v", wc.WorkerID, err)
 		return
 	}
 
 	h.setWorkerStatus(wc, msg.Status)
-
-	if err := h.handleFileReport(ctx, wc, &msg); err != nil {
+	if err := h.handleFileReport(ctx, wc, msg); err != nil {
 		log.Printf("ws: failed to persist ping from worker %d: %v", wc.WorkerID, err)
 		return
 	}
 
-	if err := wc.Send(ctx, protocol.PongMsg{Version: msg.Version}); err != nil {
+	if err := h.send(wc, protocol.MessagePong, protocol.PongMsg{Version: msg.Version}); err != nil {
 		log.Printf("ws: failed to send pong to worker %d: %v", wc.WorkerID, err)
 	}
 }
 
 func (h *Hub) handleFileReport(ctx context.Context, wc *WorkerConn, msg *protocol.PingMsg) error {
-	for _, r := range msg.Verified {
-		sha1 := append([]byte(nil), r.SHA1...)
-		crc32 := append([]byte(nil), r.CRC32...)
+	for _, report := range msg.Verified {
+		sha1 := append([]byte(nil), report.SHA1...)
+		crc32 := append([]byte(nil), report.CRC32...)
 		status := protocol.StatusVerified
 
 		item := ItemStatus{
 			WorkerID: wc.WorkerID,
-			FileID:   r.FileID,
+			FileID:   report.FileID,
 			Status:   int16(status),
 			SHA1:     sha1,
 			CRC32:    crc32,
@@ -249,7 +270,7 @@ func (h *Hub) handleFileReport(ctx context.Context, wc *WorkerConn, msg *protoco
 			return err
 		}
 
-		Tree.ApplyReport(int64(r.FileID), wc.WorkerID, status, sha1)
+		Tree.ApplyReport(int64(report.FileID), wc.WorkerID, status, sha1)
 	}
 
 	return nil
@@ -257,20 +278,20 @@ func (h *Hub) handleFileReport(ctx context.Context, wc *WorkerConn, msg *protoco
 
 func (h *Hub) setWorkerStatus(wc *WorkerConn, status protocol.WorkerStatus) {
 	statusCopy := status
-	wc.mu.Lock()
+	wc.stateMu.Lock()
 	wc.WorkerStatus = &statusCopy
 	wc.LastSeen = time.Now()
-	wc.mu.Unlock()
+	wc.stateMu.Unlock()
 }
 
 func (h *Hub) handleHeartbeat(wc *WorkerConn, data []byte) {
-	var msg protocol.HeartbeatMsg
-	if err := json.Unmarshal(data, &msg); err != nil {
+	if _, err := protocol.UnmarshalMessage[protocol.HeartbeatMsg](data); err != nil {
+		log.Printf("ws: bad heartbeat from worker %d: %v", wc.WorkerID, err)
 		return
 	}
-	wc.mu.Lock()
+	wc.stateMu.Lock()
 	wc.LastSeen = time.Now()
-	wc.mu.Unlock()
+	wc.stateMu.Unlock()
 }
 
 func (h *Hub) handleStatusSyncRequest(ctx context.Context, wc *WorkerConn) {
@@ -291,26 +312,53 @@ func (h *Hub) handleStatusSyncRequest(ctx context.Context, wc *WorkerConn) {
 		})
 		return nil
 	})
-
 	if err != nil {
 		log.Printf("ws: failed to scan item status for worker %d: %v", wc.WorkerID, err)
 		return
 	}
 
-	resp := protocol.StatusSyncResponse{
-		Type:    "status_sync_response",
-		Records: records,
-	}
-	if err := wc.Send(ctx, resp); err != nil {
+	resp := protocol.StatusSyncResponse{Type: "status_sync_response", Records: records}
+	if err := h.send(wc, "status_sync_response", resp); err != nil {
 		log.Printf("ws: failed to send status sync response to worker %d: %v", wc.WorkerID, err)
+		return
 	}
+	log.Printf("ws: synced %d status record(s) to worker %d", len(records), wc.WorkerID)
 }
 
-// SendToWorker sends a message to a specific worker.
 func (h *Hub) SendToWorker(ctx context.Context, workerID int, msg any) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	wc := h.GetConn(workerID)
 	if wc == nil {
 		return nil
 	}
-	return wc.Send(ctx, msg)
+
+	msgType, payload, err := marshalServerMessage(msg)
+	if err != nil {
+		return err
+	}
+	return h.send(wc, msgType, payload)
+}
+
+func (h *Hub) send(wc *WorkerConn, msgType string, payload any) error {
+	data := protocol.MarshalConnMessage(msgType, payload)
+	wc.writeMu.Lock()
+	defer wc.writeMu.Unlock()
+	return wc.Conn.WriteMessage(websocket.BinaryMessage, data)
+}
+
+func marshalServerMessage(msg any) (string, any, error) {
+	switch typed := msg.(type) {
+	case protocol.ConfigUpdateMsg:
+		return "config_update", typed, nil
+	case protocol.PongMsg:
+		return protocol.MessagePong, typed, nil
+	case protocol.ReclaimsSyncMsg:
+		return protocol.MessageTaskSync, typed, nil
+	case protocol.StatusSyncResponse:
+		return "status_sync_response", typed, nil
+	default:
+		return "", nil, errors.New("ws: unsupported outbound message type")
+	}
 }

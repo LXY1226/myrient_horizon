@@ -26,47 +26,56 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	sigCh := make(chan os.Signal, 1)
+	sigCh := make(chan os.Signal, 3)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
-		<-sigCh
-		log.Println("Shutting down...")
-		cancel()
+		count := 0
+		for sig := range sigCh {
+			count++
+			switch count {
+			case 1:
+				log.Printf("server: received %s, shutting down...", sig)
+				cancel()
+			case 2:
+				log.Printf("server: received %s again, press Ctrl+C once more to force exit", sig)
+			default:
+				log.Printf("server: received %s third time, forcing exit", sig)
+				os.Exit(1)
+			}
+		}
 	}()
 
 	// 1. Load flatbuffer tree.
-	log.Printf("Loading tree from %s...", *dataDir+"/full_tree.fbd")
+	log.Printf("server: loading tree from %s...", *dataDir+"/full_tree.fbd")
 	baseTree, err := myrienttree.LoadFromFile[stree.DirExt, stree.FileExt](*dataDir + "/full_tree.fbd")
 	if err != nil {
-		log.Fatalf("Failed to load tree: %v", err)
+		log.Fatalf("server: failed to load tree: %v", err)
 	}
-	log.Printf("Tree loaded: %d dirs, %d files", len(baseTree.Dirs), len(baseTree.Files))
+	log.Printf("server: tree loaded: %d dirs, %d files", len(baseTree.Dirs), len(baseTree.Files))
 
 	// 2. Connect to PostgreSQL.
-	log.Printf("Connecting to database...")
-	stree.DB, err = stree.New(ctx, *dbURL)
+	log.Printf("server: connecting to database...")
+	stree.DB, err = stree.NewStore(ctx, *dbURL)
 	if err != nil {
-		log.Fatalf("Failed to connect to DB: %v", err)
+		log.Fatalf("server: failed to connect to DB: %v", err)
 	}
 	defer stree.DB.Close()
-	log.Printf("Database connected, schema migrated")
+	log.Printf("server: database connected, schema migrated")
 
 	// 3. Build server tree.
-	stree.Tree = stree.New(baseTree)
-	// Note: With the new design, workers request their own status on connect.
-	// No need to recover state or load claims here.
-
+	stree.Tree = stree.NewTree(baseTree)
 	rootStats := stree.Tree.GetDirStats(0)
-	log.Printf("State initialized: %d total, %d downloaded, %d verified, %d archived, %d failed, %d conflicts",
+	log.Printf("server: state initialized: %d total, %d downloaded, %d verified, %d archived, %d failed, %d conflicts",
 		rootStats.Total, rootStats.Downloaded, rootStats.Verified, rootStats.Archived, rootStats.Failed, rootStats.Conflict)
 
 	// 4. Set up WebSocket hub and HTTP handlers.
 	hub := stree.NewHub()
+	go hub.Run(ctx)
 	hub.WorkerVersion = *workerVersion
 	hub.WorkerDownloadURL = *workerURL
 	hub.WorkerSHA256 = *workerSHA256
 	if *workerVersion != "" {
-		log.Printf("Worker version check enabled: expecting %s", *workerVersion)
+		log.Printf("server: worker version check enabled: expecting %s", *workerVersion)
 	}
 	h := stree.New(hub)
 
@@ -77,7 +86,7 @@ func main() {
 		Addr:         *addr,
 		Handler:      handlerWithCors,
 		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 0, // SSE needs no write timeout.
+		WriteTimeout: 0,
 		IdleTimeout:  60 * time.Second,
 	}
 
@@ -85,11 +94,11 @@ func main() {
 	go func() {
 		ln, err := getListener(*addr)
 		if err != nil {
-			log.Fatal(err)
+			log.Fatalf("server: %v", err)
 		}
-		log.Printf("Server listening on %s", ln.Addr())
+		log.Printf("server: listening on %s", ln.Addr())
 		if err := server.ServeTLS(ln, *dataDir+"/cert.pem", *dataDir+"/key.pem"); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Server error: %v", err)
+			log.Fatalf("server: server error: %v", err)
 		}
 	}()
 
@@ -100,7 +109,8 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		log.Printf("Shutdown error: %v", err)
+		log.Printf("server: shutdown error: %v", err)
 	}
+	cancel()
 	log.Println("Server stopped")
 }
