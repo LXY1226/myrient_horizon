@@ -26,14 +26,26 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	sigCh := make(chan os.Signal, 1)
+	sigCh := make(chan os.Signal, 3)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
-		<-sigCh
-		log.Println("server: shutting down...")
-		cancel()
+		count := 0
+		for sig := range sigCh {
+			count++
+			switch count {
+			case 1:
+				log.Printf("server: received %s, shutting down...", sig)
+				cancel()
+			case 2:
+				log.Printf("server: received %s again, press Ctrl+C once more to force exit", sig)
+			default:
+				log.Printf("server: received %s third time, forcing exit", sig)
+				os.Exit(1)
+			}
+		}
 	}()
 
+	// 1. Load flatbuffer tree.
 	log.Printf("server: loading tree from %s...", *dataDir+"/full_tree.fbd")
 	baseTree, err := myrienttree.LoadFromFile[stree.DirExt, stree.FileExt](*dataDir + "/full_tree.fbd")
 	if err != nil {
@@ -41,19 +53,22 @@ func main() {
 	}
 	log.Printf("server: tree loaded: %d dirs, %d files", len(baseTree.Dirs), len(baseTree.Files))
 
+	// 2. Connect to PostgreSQL.
 	log.Printf("server: connecting to database...")
-	db, err := stree.InitDB(ctx, *dbURL)
+	stree.DB, err = stree.NewStore(ctx, *dbURL)
 	if err != nil {
 		log.Fatalf("server: failed to connect to DB: %v", err)
 	}
-	defer db.Close()
+	defer stree.DB.Close()
 	log.Printf("server: database connected, schema migrated")
 
-	tree := stree.InitTree(baseTree)
-	rootStats := tree.GetDirStats(0)
+	// 3. Build server tree.
+	stree.Tree = stree.NewTree(baseTree)
+	rootStats := stree.Tree.GetDirStats(0)
 	log.Printf("server: state initialized: %d total, %d downloaded, %d verified, %d archived, %d failed, %d conflicts",
 		rootStats.Total, rootStats.Downloaded, rootStats.Verified, rootStats.Archived, rootStats.Failed, rootStats.Conflict)
 
+	// 4. Set up WebSocket hub and HTTP handlers.
 	hub := stree.NewHub()
 	go hub.Run(ctx)
 	hub.WorkerVersion = *workerVersion
@@ -75,6 +90,7 @@ func main() {
 		IdleTimeout:  60 * time.Second,
 	}
 
+	// 5. Start server.
 	go func() {
 		ln, err := getListener(*addr)
 		if err != nil {
@@ -86,8 +102,10 @@ func main() {
 		}
 	}()
 
+	// 6. Wait for shutdown signal via context.
 	<-ctx.Done()
 
+	// 7. Graceful shutdown.
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {

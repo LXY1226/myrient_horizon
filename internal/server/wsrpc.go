@@ -114,7 +114,7 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	workerID, err := GetDB().AuthenticateWorker(r.Context(), key)
+	workerID, err := DB.AuthenticateWorker(r.Context(), key)
 	if err != nil || workerID == 0 {
 		http.Error(w, "invalid key", http.StatusUnauthorized)
 		return
@@ -182,7 +182,7 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Hub) sendInitialReclaims(ctx context.Context, wc *WorkerConn) error {
-	reclaims, err := GetDB().GetReclaimsByWorker(ctx, wc.WorkerID)
+	reclaims, err := DB.GetReclaimsByWorker(ctx, wc.WorkerID)
 	if err != nil {
 		return err
 	}
@@ -266,11 +266,11 @@ func (h *Hub) handleFileReport(ctx context.Context, wc *WorkerConn, msg *protoco
 			SHA1:     sha1,
 			CRC32:    crc32,
 		}
-		if err := GetDB().UpsertItemStatus(ctx, &item); err != nil {
+		if err := DB.UpsertItemStatus(ctx, &item); err != nil {
 			return err
 		}
 
-		GetTree().ApplyReport(int64(report.FileID), wc.WorkerID, status, sha1)
+		Tree.ApplyReport(int64(report.FileID), wc.WorkerID, status, sha1)
 	}
 
 	return nil
@@ -296,7 +296,7 @@ func (h *Hub) handleHeartbeat(wc *WorkerConn, data []byte) {
 
 func (h *Hub) handleStatusSyncRequest(ctx context.Context, wc *WorkerConn) {
 	var records []protocol.ItemStatus
-	err := GetDB().ScanAllItemStatusByWorker(ctx, wc.WorkerID, func(item *ItemStatus) error {
+	err := DB.ScanAllItemStatusByWorker(ctx, wc.WorkerID, func(item *ItemStatus) error {
 		var sha1, crc32 string
 		if item.SHA1 != nil {
 			sha1 = hex.EncodeToString(item.SHA1)
