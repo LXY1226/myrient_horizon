@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"bytes"
 	"fmt"
 	"log"
 	mt "myrient-horizon/pkg/myrienttree"
@@ -10,9 +11,10 @@ import (
 
 // Task is the unit flowing through downloader and verifier.
 type Task struct {
-	FileID    int32  // 全局文件索引
-	LocalPath string // 本地路径（最终的绝对路径）
-	Managed   bool
+	FileID     int32  // 全局文件索引
+	LocalPath  string // 本地路径（最终的绝对路径）
+	Managed    bool
+	BadZipSHA1 []byte
 }
 
 const (
@@ -69,6 +71,18 @@ func (t *Task) getPath(sb *strings.Builder) *strings.Builder {
 
 func (t *Task) GetPath() string {
 	return t.getPath(&strings.Builder{}).String()
+}
+
+func (t *Task) ShouldSkipZipCheck(sha1 []byte) bool {
+	return len(t.BadZipSHA1) > 0 && bytes.Equal(t.BadZipSHA1, sha1)
+}
+
+func (t *Task) RememberBadZipSHA1(sha1 []byte) {
+	t.BadZipSHA1 = append(t.BadZipSHA1[:0], sha1...)
+}
+
+func (t *Task) ClearBadZipSHA1() {
+	t.BadZipSHA1 = nil
 }
 
 //func BuildTask(fileID int64, downloadRoot string) (Task, bool) {

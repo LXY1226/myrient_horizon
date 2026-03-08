@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha1"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"hash/crc32"
 	"io"
@@ -131,23 +132,29 @@ func (t *Task) Verify() error {
 	}
 	defer f.Close()
 	fd := t.GetFile()
-	if strings.ToLower(filepath.Ext(t.LocalPath)) == ".zip" {
-		err = testZip(f)
-		if err != nil {
-			log.Println("Verify:", t.LocalPath, "zip:", err)
-			return err
-		}
-		_, err = f.Seek(0, io.SeekStart)
-		if err != nil {
-			log.Println("Verify:", t.LocalPath, "seek:", err)
-			return err
-		}
-	}
 	sha, crc, err := computeHashes(f)
 	if err != nil {
 		log.Println("Should not happen!")
 		log.Println("Verify:", t.LocalPath, "computeHashes:", err)
 		return err
+	}
+	if strings.ToLower(filepath.Ext(t.LocalPath)) == ".zip" {
+		if t.ShouldSkipZipCheck(sha) {
+			log.Printf("Verify: %s zip check skipped; re-downloaded file has unchanged sha1 %s after previous unzip failure", t.LocalPath, hex.EncodeToString(sha))
+		} else {
+			_, err = f.Seek(0, io.SeekStart)
+			if err != nil {
+				log.Println("Verify:", t.LocalPath, "seek:", err)
+				return err
+			}
+			err = testZip(f)
+			if err != nil {
+				t.RememberBadZipSHA1(sha)
+				log.Printf("Verify: %s zip: %v (remembering sha1 %s for downloader retry)", t.LocalPath, err, hex.EncodeToString(sha))
+				return err
+			}
+		}
+		t.ClearBadZipSHA1()
 	}
 	log.Println("Verify:", t.FileID, fd.Name, "sha:", sha, "crc:", crc)
 	Reporter.PushVerified(t, sha, crc)
