@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"time"
 
-	stree "myrient-horizon/internal/server"
+	"myrient-horizon/internal/server"
 )
 
 func main() {
@@ -36,7 +36,7 @@ func main() {
 	// 1. Load flatbuffer tree.
 	treePath := *dataDir + "/full_tree.fbd"
 	log.Printf("server: loading tree from %s...", treePath)
-	serverTree, err := stree.LoadTree(treePath)
+	serverTree, err := server.LoadTree(treePath)
 	if err != nil {
 		log.Fatalf("server: failed to load tree: %v", err)
 	}
@@ -44,8 +44,8 @@ func main() {
 
 	// 2. Connect to PostgreSQL.
 	log.Printf("server: connecting to database...")
-	stree.InitDB(*dbURL)
-	defer stree.GetDB().Close()
+	server.InitDB(*dbURL)
+	defer server.GetDB().Close()
 	log.Printf("server: database connected, schema migrated")
 
 	rootStats := serverTree.GetDirStats(0)
@@ -53,19 +53,19 @@ func main() {
 		rootStats.Total, rootStats.Downloaded, rootStats.Verified, rootStats.Archived, rootStats.Failed, rootStats.Conflict)
 
 	// 4. Set up WebSocket hub and HTTP handlers.
-	hub := stree.NewHub()
+	hub := server.NewHub()
 	hub.WorkerVersion = *workerVersion
 	hub.WorkerDownloadURL = *workerURL
 	hub.WorkerSHA256 = *workerSHA256
 	if *workerVersion != "" {
 		log.Printf("server: worker version check enabled: expecting %s", *workerVersion)
 	}
-	h := stree.New(hub)
+	h := server.New(hub)
 
 	mux := http.NewServeMux()
 	handlerWithCors := h.Register(mux)
 
-	server := &http.Server{
+	srv := &http.Server{
 		Addr:         *addr,
 		Handler:      handlerWithCors,
 		ReadTimeout:  15 * time.Second,
@@ -85,7 +85,7 @@ func main() {
 	// 6. Start goroutines.
 	go hub.Run(ctx)
 	go func() {
-		if err := server.ServeTLS(ln, *dataDir+"/cert.pem", *dataDir+"/key.pem"); err != nil && err != http.ErrServerClosed {
+		if err := srv.ServeTLS(ln, *dataDir+"/cert.pem", *dataDir+"/key.pem"); err != nil && err != http.ErrServerClosed {
 			errCh <- err
 		}
 	}()
@@ -101,7 +101,7 @@ func main() {
 	// 8. Graceful shutdown.
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
-	if err := server.Shutdown(shutdownCtx); err != nil {
+	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("server: shutdown error: %v", err)
 	}
 
