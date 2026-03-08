@@ -28,6 +28,11 @@ const (
 	MessageHeartbeat          = "heartbeat"
 	MessageStatusSyncRequest  = "status_sync_request"
 	MessageStatusSyncResponse = "status_sync_response"
+
+	HeaderWorkerVersion = "X-Worker-Version"
+	HeaderTreeSHA1      = "X-Tree-SHA1"
+	HeaderReason        = "X-Reason"
+	HeaderRetryAfter    = "X-Retry-After"
 )
 
 // UnmarshalConnMessage splits a connection message into type and payload.
@@ -140,9 +145,12 @@ type Reclaim struct {
 // UpdateRequiredResponse is the JSON body returned by the server when
 // a worker's version does not match the expected version (HTTP 426).
 type UpdateRequiredResponse struct {
-	Error          string `json:"error"`           // "update_required"
-	CurrentVersion string `json:"current_version"` // worker's reported version
-	LatestVersion  string `json:"latest_version"`  // server's expected version
-	DownloadURL    string `json:"download_url"`
-	SHA256         string `json:"sha256"`
+	Error           string `json:"error"` // "update_required"
+	Target          string `json:"target,omitempty"`
+	CurrentVersion  string `json:"current_version,omitempty"`
+	LatestVersion   string `json:"latest_version,omitempty"`
+	CurrentTreeSHA1 string `json:"current_tree_sha1,omitempty"`
+	LatestTreeSHA1  string `json:"latest_tree_sha1,omitempty"`
+	DownloadURL     string `json:"download_url,omitempty"`
+	SHA256          string `json:"sha256,omitempty"`
 }
