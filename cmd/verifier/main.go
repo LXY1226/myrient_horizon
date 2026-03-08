@@ -1,10 +1,10 @@
 package main
 
 import (
-"bufio"
-"context"
-"log"
-"myrient-horizon/internal/worker"
+	"bufio"
+	"context"
+	"log"
+	"myrient-horizon/internal/worker"
 	"myrient-horizon/internal/worker/config"
 	"os"
 	"os/signal"
@@ -67,11 +67,11 @@ func main() {
 
 	var matchedCount, verifiedCount, failedCount int
 	log.Printf("Scanning files...")
-	err = filepath.Walk(scanDir, func(path string, fi os.FileInfo, err error) error {
+	err = filepath.WalkDir(scanDir, func(path string, d os.DirEntry, err error) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if err != nil || fi.IsDir() {
+		if err != nil || d.IsDir() {
 			return nil
 		}
 		if strings.HasSuffix(path, ".downloading") {
@@ -80,8 +80,8 @@ func main() {
 		if _, err := os.Stat(path + ".aria2"); err == nil {
 			return nil
 		}
-
-		task, err := worker.MatchTaskByPath(filepath.Split(path))
+		relPath := strings.TrimPrefix(path, scanDir)
+		fileID, err := worker.MatchFileByPath(filepath.Split(relPath))
 		if err != nil {
 			bw.WriteString(path)
 			bw.WriteString(": ")
@@ -90,6 +90,7 @@ func main() {
 			return nil
 		}
 		matchedCount++
+		task := worker.Task{FileID: fileID, LocalPath: path}
 
 		err = task.Verify()
 		if err != nil {

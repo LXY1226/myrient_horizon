@@ -67,7 +67,9 @@ func LoadFromFile[DirExt any, FileExt any](path string) (*Tree[DirExt, FileExt],
 		return nil, "", err
 	}
 	hash := sha1.Sum(data)
-	return tree, hex.EncodeToString(hash[:]), nil
+	hashStr := hex.EncodeToString(hash[:])
+	log.Println("SHA1 of tree:", hashStr)
+	return tree, hashStr, nil
 }
 
 // LoadFromBytes builds the tree from raw flatbuffer bytes.

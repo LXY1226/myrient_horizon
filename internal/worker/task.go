@@ -5,25 +5,23 @@ import (
 	"fmt"
 	"log"
 	mt "myrient-horizon/pkg/myrienttree"
-	"path/filepath"
+	"os"
 	"strings"
 )
 
 // Task is the unit flowing through downloader and verifier.
 type Task struct {
 	FileID     int32  // 全局文件索引
-	LocalPath  string // 本地路径（最终的绝对路径）
+	LocalPath  string // XXX for verifier, XXX.downloading for downloader
 	Managed    bool
 	BadZipSHA1 []byte
 }
 
 const (
 	DownloadingSuffix = ".downloading"
-	VerifiedSuffix    = ".verified"
 )
 
-func (t *Task) DownloadingPath() string { return t.LocalPath + DownloadingSuffix }
-func (t *Task) VerifiedPath() string    { return t.LocalPath + VerifiedSuffix }
+func (t *Task) FinalPath() string { return t.LocalPath[:len(t.LocalPath)-len(DownloadingSuffix)] }
 
 type dirExt struct{}
 type fileExt struct{}
@@ -85,35 +83,11 @@ func (t *Task) ClearBadZipSHA1() {
 	t.BadZipSHA1 = nil
 }
 
-//func BuildTask(fileID int64, downloadRoot string) (Task, bool) {
-//	if iTree == nil || fileID < 0 || fileID >= int64(len(iTree.Files)) {
-//		return Task{}, false
-//	}
-//
-//	file := &iTree.Files[fileID]
-//	dir := &iTree.Dirs[file.DirIdx]
-//	relDir := strings.Trim(dir.Path, "/")
-//	finalPath := filepath.Join(downloadRoot, filepath.FromSlash(relDir), file.Name)
-//	uri := myrientBaseURL + dir.Path + url.PathEscape(file.Name)
-//
-//	return Task{
-//		FileID:    fileID,
-//		DirID:     file.DirIdx,
-//		Name:      file.Name,
-//		LocalPath: finalPath,
-//		URI:       uri,
-//		Size:      file.Size,
-//	}, true
-//}
-
-//func MatchFileByPath(path string) (fileID int, err error) {
-//
-//}
-
-func MatchTaskByPath(dir, name string) (*Task, error) {
+func MatchFileByPath(dir, name string) (int32, error) {
+	dir = strings.ReplaceAll(dir, string(os.PathSeparator), "/")
 	dirID, ok := iTree.DirByPath(dir)
 	if !ok {
-		return nil, fmt.Errorf("no matching dir: %s", dir)
+		return -1, fmt.Errorf("no matching dir: %s", dir)
 	}
 	dirEnt := &iTree.Dirs[dirID]
 	for idx := dirEnt.FileStart; idx < dirEnt.FileEnd; idx++ {
@@ -121,12 +95,9 @@ func MatchTaskByPath(dir, name string) (*Task, error) {
 		if file.DirIdx != dirID || file.Name != name {
 			continue
 		}
-		return &Task{
-			FileID:    idx,
-			LocalPath: filepath.Join(dir, name),
-		}, nil
+		return idx, nil
 	}
-	return nil, fmt.Errorf("no matching file: %s", name)
+	return -1, fmt.Errorf("no matching file: %s", name)
 }
 
 func splitRelativePath(rel string) (dirPart, fileName string) {

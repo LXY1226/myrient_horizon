@@ -125,7 +125,8 @@ func (v *verifierRuntime) worker(ctx context.Context) {
 // This is the core verification primitive - the Verifier owner
 // orchestrates calling this method, but the logic stays here.
 func (t *Task) Verify() error {
-	f, err := os.Open(t.DownloadingPath())
+	var f *os.File
+	f, err := os.Open(t.LocalPath)
 	if err != nil {
 		log.Println("Verify:", t.LocalPath, "open:", err)
 		return err
@@ -156,7 +157,7 @@ func (t *Task) Verify() error {
 		}
 		t.ClearBadZipSHA1()
 	}
-	log.Println("Verify:", t.FileID, fd.Name, "sha:", sha, "crc:", crc)
+	log.Printf("Verify: #%d %s %s %s", t.FileID, hex.EncodeToString(sha), hex.EncodeToString(crc), fd.Name)
 	Reporter.PushVerified(t, sha, crc)
 	return nil
 }

@@ -54,6 +54,9 @@ func (c *WorkerConfig) applyDefaults() {
 	if c.DiskMinGB == 0 {
 		c.DiskMinGB = 10.0
 	}
+	if c.HeartBeatIntv == 0 {
+		c.HeartBeatIntv = 3
+	}
 }
 
 const configFileName = "worker.json"

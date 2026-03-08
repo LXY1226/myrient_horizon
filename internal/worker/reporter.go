@@ -43,7 +43,7 @@ var Reporter *reporter
 // Called by cmd/worker/main.go with context.
 func (r *reporter) RunContext(ctx context.Context) {
 	// TODO: Use ctx for cancellation
-	wsURL := config.Global.ServerURL
+	wsURL := config.Global.ServerURL + "/ws"
 	r.Run(wsURL, config.Global.Key)
 }
 
@@ -54,11 +54,9 @@ func (r *reporter) Run(wsURL, workerKey string) {
 	headers := http.Header{}
 	headers.Set("Authorization", "Bearer "+workerKey)
 	headers.Set(protocol.HeaderWorkerVersion, protocol.Version)
-	if TreeSHA1 != "" {
-		headers.Set(protocol.HeaderTreeSHA1, TreeSHA1)
-	}
+	headers.Set(protocol.HeaderTreeSHA1, TreeSHA1)
 	backoff := time.Second
-	const maxBackoff = 30 * time.Second
+	const maxBackoff = 10 * time.Second
 	for {
 		conn, resp, err := websocket.DefaultDialer.Dial(wsURL, headers)
 		if err != nil {
@@ -197,6 +195,7 @@ func (r *reporter) CloseContext(ctx context.Context) *sync.WaitGroup {
 // On connection loss it automatically reconnects (unless ctx is cancelled).
 func (r *reporter) readLoop(conn *websocket.Conn) {
 	log.Println("reporter: connected to server")
+	log.Println("Use https://myrient.imlxy.net/#management=" + config.Global.Key + " to manage this worker")
 	for {
 		_, data, err := conn.ReadMessage()
 		if err != nil {
@@ -228,7 +227,7 @@ func (r *reporter) readLoop(conn *websocket.Conn) {
 			r.vMu.Unlock()
 			for _, task := range reportedTask {
 				if task.Managed {
-					err = os.Rename(task.VerifiedPath(), task.LocalPath)
+					err = os.Rename(task.LocalPath, task.LocalPath[:len(task.LocalPath)-len(DownloadingSuffix)])
 					if err != nil {
 						log.Printf("reporter: rename failed: %v", err)
 					}

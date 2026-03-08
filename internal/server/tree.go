@@ -61,17 +61,10 @@ func GetTreeSHA1() string {
 	return treeSHA1
 }
 
-func LoadTree(path string) (*ServerTree, error) {
-	treeOnce.Do(func() {
-		treeInitErr = initTree(path)
-	})
-	return treeInstance, treeInitErr
-}
-
-func initTree(path string) error {
+func LoadTree(path string) error {
 	base, hash, err := mt.LoadFromFile[DirExt, FileExt](path)
 	if err != nil {
-		return err
+		panic(err)
 	}
 	treeInstance = NewTree(base)
 	treeSHA1 = hash

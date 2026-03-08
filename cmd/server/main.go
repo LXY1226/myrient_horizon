@@ -36,11 +36,9 @@ func main() {
 	// 1. Load flatbuffer tree.
 	treePath := *dataDir + "/full_tree.fbd"
 	log.Printf("server: loading tree from %s...", treePath)
-	serverTree, err := server.LoadTree(treePath)
-	if err != nil {
-		log.Fatalf("server: failed to load tree: %v", err)
-	}
-	log.Printf("server: tree loaded: %d dirs, %d files", len(serverTree.Base().Dirs), len(serverTree.Base().Files))
+	server.LoadTree(treePath)
+	base := server.Tree.Base()
+	log.Printf("server: tree loaded: %d dirs, %d files", len(base.Dirs), len(base.Files))
 
 	// 2. Connect to PostgreSQL.
 	log.Printf("server: connecting to database...")
@@ -48,7 +46,7 @@ func main() {
 	defer server.GetDB().Close()
 	log.Printf("server: database connected, schema migrated")
 
-	rootStats := serverTree.GetDirStats(0)
+	rootStats := server.Tree.GetDirStats(0)
 	log.Printf("server: state initialized: %d total, %d downloaded, %d verified, %d archived, %d failed, %d conflicts",
 		rootStats.Total, rootStats.Downloaded, rootStats.Verified, rootStats.Archived, rootStats.Failed, rootStats.Conflict)
 

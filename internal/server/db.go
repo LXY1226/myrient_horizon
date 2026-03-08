@@ -100,24 +100,6 @@ func GetDB() *Store {
 	return dbInstance
 }
 
-// NewStore creates a new Store and runs schema migration.
-// Deprecated: Use InitDB() for singleton pattern.
-func NewStore(ctx context.Context, connString string) (*Store, error) {
-	pool, err := pgxpool.New(ctx, connString)
-	if err != nil {
-		return nil, fmt.Errorf("connect to db: %w", err)
-	}
-	if err := pool.Ping(ctx); err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("ping db: %w", err)
-	}
-	if _, err := pool.Exec(ctx, schema); err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("migrate schema: %w", err)
-	}
-	return &Store{pool: pool}, nil
-}
-
 // Close shuts down the database connection pool.
 // Pattern: Lifecycle cleanup - call during graceful shutdown.
 func (s *Store) Close() {
