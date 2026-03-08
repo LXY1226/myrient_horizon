@@ -2,7 +2,12 @@ package server
 
 import (
 	"bytes"
+	"crypto/sha1"
+	"encoding/hex"
+	"fmt"
+	"io"
 	"log"
+	"os"
 	"sync"
 
 	mt "myrient-horizon/pkg/myrienttree"
@@ -46,37 +51,56 @@ type ServerTree struct {
 var (
 	treeInstance *ServerTree
 	treeOnce     sync.Once
+	treeInitErr  error
+	treeSHA1     string
 )
 
 // Tree is the global ServerTree instance (deprecated: use GetTree()).
 var Tree *ServerTree
 
-// InitTree initializes the singleton ServerTree. Must be called once before GetTree().
-// Pattern: sync.Once ensures thread-safe single initialization.
-func InitTree(base *mt.Tree[DirExt, FileExt]) *ServerTree {
-	treeOnce.Do(func() {
-		treeInstance = NewTree(base)
-		Tree = treeInstance // Maintain backward compatibility
-		log.Println("tree: initialized successfully")
-	})
-	return treeInstance
-}
-
-// GetTree returns the singleton ServerTree instance.
-// Must be called after InitTree(). Returns nil if not initialized.
 func GetTree() *ServerTree {
 	return treeInstance
 }
 
-// LoadTree loads a tree from file and initializes the global instance.
-// Deprecated: Use InitTree() for singleton pattern after loading.
+func GetTreeSHA1() string {
+	return treeSHA1
+}
+
 func LoadTree(path string) (*ServerTree, error) {
-	tree, err := mt.LoadFromFile[DirExt, FileExt](path)
+	treeOnce.Do(func() {
+		treeInitErr = initTree(path)
+	})
+	return treeInstance, treeInitErr
+}
+
+func initTree(path string) error {
+	hash, err := fileSHA1(path)
 	if err != nil {
-		return nil, err
+		return fmt.Errorf("hash tree file: %w", err)
 	}
-	Tree = NewTree(tree)
-	return Tree, nil
+	base, err := mt.LoadFromFile[DirExt, FileExt](path)
+	if err != nil {
+		return err
+	}
+	treeInstance = NewTree(base)
+	treeSHA1 = hash
+	Tree = treeInstance
+	log.Printf("tree: initialized successfully (sha1=%s)", treeSHA1)
+	return nil
+}
+
+func fileSHA1(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	h := sha1.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // NewTree creates a ServerTree from a base tree.

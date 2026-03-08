@@ -11,7 +11,6 @@ import (
 	"time"
 
 	stree "myrient-horizon/internal/server"
-	"myrient-horizon/pkg/myrienttree"
 )
 
 func main() {
@@ -35,12 +34,13 @@ func main() {
 	}()
 
 	// 1. Load flatbuffer tree.
-	log.Printf("server: loading tree from %s...", *dataDir+"/full_tree.fbd")
-	baseTree, err := myrienttree.LoadFromFile[stree.DirExt, stree.FileExt](*dataDir + "/full_tree.fbd")
+	treePath := *dataDir + "/full_tree.fbd"
+	log.Printf("server: loading tree from %s...", treePath)
+	serverTree, err := stree.LoadTree(treePath)
 	if err != nil {
 		log.Fatalf("server: failed to load tree: %v", err)
 	}
-	log.Printf("server: tree loaded: %d dirs, %d files", len(baseTree.Dirs), len(baseTree.Files))
+	log.Printf("server: tree loaded: %d dirs, %d files", len(serverTree.Base().Dirs), len(serverTree.Base().Files))
 
 	// 2. Connect to PostgreSQL.
 	log.Printf("server: connecting to database...")
@@ -48,9 +48,7 @@ func main() {
 	defer stree.GetDB().Close()
 	log.Printf("server: database connected, schema migrated")
 
-	// 3. Build server tree.
-	stree.InitTree(baseTree)
-	rootStats := stree.GetTree().GetDirStats(0)
+	rootStats := serverTree.GetDirStats(0)
 	log.Printf("server: state initialized: %d total, %d downloaded, %d verified, %d archived, %d failed, %d conflicts",
 		rootStats.Total, rootStats.Downloaded, rootStats.Verified, rootStats.Archived, rootStats.Failed, rootStats.Conflict)
 
