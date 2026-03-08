@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -142,11 +143,12 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.WorkerVersion != "" {
-		clientVersion := r.Header.Get("X-Worker-Version")
+		clientVersion := r.Header.Get(protocol.HeaderWorkerVersion)
 		if clientVersion != "verifier" && clientVersion != h.WorkerVersion {
 			log.Printf("wsrpc: worker %d version mismatch: got %q, want %q", workerID, clientVersion, h.WorkerVersion)
 			resp := protocol.UpdateRequiredResponse{
 				Error:          "update_required",
+				Target:         "binary",
 				CurrentVersion: clientVersion,
 				LatestVersion:  h.WorkerVersion,
 				DownloadURL:    h.WorkerDownloadURL,
@@ -157,6 +159,22 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewEncoder(w).Encode(resp)
 			return
 		}
+	}
+
+	workerTreeSHA1 := r.Header.Get(protocol.HeaderTreeSHA1)
+	serverTreeSHA1 := GetTreeSHA1()
+	if serverTreeSHA1 != "" && !strings.EqualFold(workerTreeSHA1, serverTreeSHA1) {
+		log.Printf("wsrpc: worker %d tree mismatch: got %q, want %q", workerID, workerTreeSHA1, serverTreeSHA1)
+		resp := protocol.UpdateRequiredResponse{
+			Error:           "update_required",
+			Target:          "tree",
+			CurrentTreeSHA1: workerTreeSHA1,
+			LatestTreeSHA1:  serverTreeSHA1,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUpgradeRequired)
+		_ = json.NewEncoder(w).Encode(resp)
+		return
 	}
 
 	conn, err := upgrader.Upgrade(w, r, nil)

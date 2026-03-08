@@ -3,6 +3,7 @@ package worker
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -32,8 +33,19 @@ func CleanOldBinary() {
 	}
 }
 
-func doUpdate(resp *http.Response) {
-
+func doUpdate(resp *http.Response) error {
+	var info protocol.UpdateRequiredResponse
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return fmt.Errorf("updater: decode upgrade response: %w", err)
+	}
+	switch info.Target {
+	case "binary":
+		return fmt.Errorf("updater: binary upgrade required: current=%q latest=%q", info.CurrentVersion, info.LatestVersion)
+	case "tree":
+		return fmt.Errorf("updater: tree upgrade required: current_sha1=%q latest_sha1=%q", info.CurrentTreeSHA1, info.LatestTreeSHA1)
+	default:
+		return fmt.Errorf("updater: unknown upgrade target %q", info.Target)
+	}
 }
 
 // Apply downloads the new binary, verifies its SHA-256, replaces the

@@ -2,10 +2,13 @@ package worker
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"myrient-horizon/internal/worker/config"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -50,17 +53,34 @@ func (r *reporter) Run(wsURL, workerKey string) {
 	}
 	headers := http.Header{}
 	headers.Set("Authorization", "Bearer "+workerKey)
-	headers.Set("X-Worker-Version", protocol.Version)
+	headers.Set(protocol.HeaderWorkerVersion, protocol.Version)
+	if TreeSHA1 != "" {
+		headers.Set(protocol.HeaderTreeSHA1, TreeSHA1)
+	}
 	backoff := time.Second
 	const maxBackoff = 30 * time.Second
 	for {
 		conn, resp, err := websocket.DefaultDialer.Dial(wsURL, headers)
 		if err != nil {
-			if resp != nil && resp.StatusCode == http.StatusUpgradeRequired {
-				doUpdate(resp)
+			if resp != nil {
+				switch resp.StatusCode {
+				case http.StatusUpgradeRequired:
+					upgradeErr := doUpdate(resp)
+					_ = resp.Body.Close()
+					log.Fatal(upgradeErr)
+				case http.StatusServiceUnavailable:
+					retryDelay, retryReason := serviceUnavailableRetry(resp.Header, backoff)
+					_ = resp.Body.Close()
+					log.Printf("reporter: server unavailable: %s", retryReason)
+					log.Printf("reporter: retrying in %v", retryDelay)
+					time.Sleep(retryDelay)
+					backoff = time.Second
+					continue
+				}
 			}
 			log.Printf("reporter: reconnect failed: %v (retry in %v)", err, backoff)
 			backoff = min(backoff*2, maxBackoff)
+			time.Sleep(backoff)
 			continue
 		}
 		closed := false
@@ -69,6 +89,38 @@ func (r *reporter) Run(wsURL, workerKey string) {
 		r.readLoop(conn)
 		closed = true
 	}
+}
+
+func serviceUnavailableRetry(headers http.Header, fallback time.Duration) (time.Duration, string) {
+	reason := strings.TrimSpace(headers.Get(protocol.HeaderReason))
+	if reason == "" {
+		reason = "server unavailable"
+	}
+	retryDelay, err := parseRetryDelay(headers.Get(protocol.HeaderRetryAfter))
+	if err != nil {
+		log.Printf("reporter: invalid %s header %q: %v", protocol.HeaderRetryAfter, headers.Get(protocol.HeaderRetryAfter), err)
+		return fallback, reason
+	}
+	if retryDelay <= 0 {
+		return fallback, reason
+	}
+	return retryDelay, reason
+}
+
+func parseRetryDelay(raw string) (time.Duration, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, nil
+	}
+	seconds, err := strconv.Atoi(raw)
+	if err == nil {
+		return time.Duration(seconds) * time.Second, nil
+	}
+	d, durationErr := time.ParseDuration(raw)
+	if durationErr == nil {
+		return d, nil
+	}
+	return 0, fmt.Errorf("parse seconds: %v; parse duration: %v", err, durationErr)
 }
 
 func (r *reporter) report(conn *websocket.Conn, closed *bool) {
@@ -220,7 +272,7 @@ func initReporter() {
 	if config.Global.ServerURL == "" {
 		log.Fatal("reporter: ServerURL is required but not configured")
 	}
-if config.Global.Key == "" {
+	if config.Global.Key == "" {
 		log.Fatal("reporter: worker Key is required but not configured")
 	}
 	Reporter = &reporter{}
