@@ -2,12 +2,7 @@ package server
 
 import (
 	"bytes"
-	"crypto/sha1"
-	"encoding/hex"
-	"fmt"
-	"io"
 	"log"
-	"os"
 	"sync"
 
 	mt "myrient-horizon/pkg/myrienttree"
@@ -74,11 +69,7 @@ func LoadTree(path string) (*ServerTree, error) {
 }
 
 func initTree(path string) error {
-	hash, err := fileSHA1(path)
-	if err != nil {
-		return fmt.Errorf("hash tree file: %w", err)
-	}
-	base, err := mt.LoadFromFile[DirExt, FileExt](path)
+	base, hash, err := mt.LoadFromFile[DirExt, FileExt](path)
 	if err != nil {
 		return err
 	}
@@ -87,20 +78,6 @@ func initTree(path string) error {
 	Tree = treeInstance
 	log.Printf("tree: initialized successfully (sha1=%s)", treeSHA1)
 	return nil
-}
-
-func fileSHA1(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-
-	h := sha1.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // NewTree creates a ServerTree from a base tree.

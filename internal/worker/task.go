@@ -1,13 +1,9 @@
 package worker
 
 import (
-	"crypto/sha1"
-	"encoding/hex"
 	"fmt"
-	"io"
 	"log"
 	mt "myrient-horizon/pkg/myrienttree"
-	"os"
 	"path/filepath"
 	"strings"
 )
@@ -44,31 +40,13 @@ func LoadTree(path string) {
 }
 
 func initTree(path string) error {
-	hash, err := fileSHA1(path)
-	if err != nil {
-		return fmt.Errorf("hash tree file: %w", err)
-	}
-	tree, err := mt.LoadFromFile[dirExt, fileExt](path)
+	tree, hash, err := mt.LoadFromFile[dirExt, fileExt](path)
 	if err != nil {
 		return err
 	}
 	iTree = tree
 	TreeSHA1 = hash
 	return nil
-}
-
-func fileSHA1(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-
-	h := sha1.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func (t *Task) GetFile() mt.FileNode[fileExt] {

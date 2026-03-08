@@ -3,6 +3,8 @@
 package myrienttree
 
 import (
+	"crypto/sha1"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"os"
@@ -54,13 +56,18 @@ type Tree[DirExt any, FileExt any] struct {
 }
 
 // LoadFromFile reads a flatbuffer file and builds the tree.
-func LoadFromFile[DirExt any, FileExt any](path string) (*Tree[DirExt, FileExt], error) {
+func LoadFromFile[DirExt any, FileExt any](path string) (*Tree[DirExt, FileExt], string, error) {
 	log.Printf("Loading tree from %s...", path)
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read flatbuffer: %w", err)
+		return nil, "", fmt.Errorf("read flatbuffer: %w", err)
 	}
-	return LoadFromBytes[DirExt, FileExt](data)
+	tree, err := LoadFromBytes[DirExt, FileExt](data)
+	if err != nil {
+		return nil, "", err
+	}
+	hash := sha1.Sum(data)
+	return tree, hex.EncodeToString(hash[:]), nil
 }
 
 // LoadFromBytes builds the tree from raw flatbuffer bytes.
