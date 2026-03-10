@@ -1,0 +1,25 @@
+Build verification:
+SUCCESS: internal/server package builds correctly
+
+ScanAllItemStatus function added successfully:
+func (s *Store) ScanAllItemStatus(ctx context.Context, fn func(*ItemStatus) error) error {
+	rows, err := s.pool.Query(ctx,
+		`SELECT worker_id, file_id, status, sha1, crc32 FROM item_status`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var item ItemStatus
+		if err := rows.Scan(&item.WorkerID, &item.FileID, &item.Status, &item.SHA1, &item.CRC32); err != nil {
+			return err
+		}
+		if err := fn(&item); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
+type Reclaim struct {

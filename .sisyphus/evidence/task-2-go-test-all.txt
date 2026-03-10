@@ -1,0 +1,48 @@
+panic: test timed out after 10m0s
+	running tests:
+		TestChan (10m0s)
+
+goroutine 10 [running]:
+testing.(*M).startAlarm.func1()
+	/root/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.2.linux-amd64/src/testing/testing.go:2682 +0x345
+created by time.goFunc
+	/root/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.2.linux-amd64/src/time/sleep.go:215 +0x2d
+
+goroutine 1 [chan receive]:
+testing.(*T).Run(0xc0000b4380, {0x6847fe?, 0xc00007bb30?}, 0x69cbb0)
+	/root/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.2.linux-amd64/src/testing/testing.go:2005 +0x485
+testing.runTests.func1(0xc0000b4380)
+	/root/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.2.linux-amd64/src/testing/testing.go:2477 +0x37
+testing.tRunner(0xc0000b4380, 0xc00007bc70)
+	/root/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.2.linux-amd64/src/testing/testing.go:1934 +0xea
+testing.runTests(0xc000012138, {0x8b45b0, 0x1, 0x1}, {0x7?, 0xc000016d80?, 0x8c3da0?})
+	/root/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.2.linux-amd64/src/testing/testing.go:2475 +0x4b4
+testing.(*M).Run(0xc0000ac5a0)
+	/root/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.2.linux-amd64/src/testing/testing.go:2337 +0x63a
+main.main()
+	_testmain.go:45 +0x9b
+
+goroutine 8 [chan send]:
+myrient-horizon/cmd/server.TestChan(0xc0000b4540)
+	/mnt/c/Users/Lin/GolandProjects/myrient-horizon-worktree/cmd/server/ch_test.go:30 +0x1f9
+testing.tRunner(0xc0000b4540, 0x69cbb0)
+	/root/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.2.linux-amd64/src/testing/testing.go:1934 +0xea
+created by testing.(*T).Run in goroutine 1
+	/root/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.2.linux-amd64/src/testing/testing.go:1997 +0x465
+
+goroutine 9 [select]:
+myrient-horizon/cmd/server.TestChan.func1()
+	/mnt/c/Users/Lin/GolandProjects/myrient-horizon-worktree/cmd/server/ch_test.go:13 +0x88
+created by myrient-horizon/cmd/server.TestChan in goroutine 8
+	/mnt/c/Users/Lin/GolandProjects/myrient-horizon-worktree/cmd/server/ch_test.go:11 +0xa6
+FAIL	myrient-horizon/cmd/server	600.105s
+?   	myrient-horizon/cmd/verifier	[no test files]
+?   	myrient-horizon/cmd/worker	[no test files]
+?   	myrient-horizon/internal/server	[no test files]
+?   	myrient-horizon/internal/worker	[no test files]
+?   	myrient-horizon/internal/worker/aria2	[no test files]
+?   	myrient-horizon/internal/worker/config	[no test files]
+?   	myrient-horizon/pkg/myrienttree	[no test files]
+?   	myrient-horizon/pkg/myrienttree/MyrientTree	[no test files]
+?   	myrient-horizon/pkg/protocol	[no test files]
+FAIL

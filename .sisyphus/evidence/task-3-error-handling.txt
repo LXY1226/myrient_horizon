@@ -1,0 +1,6 @@
+	if err := serverTree.HydrateFromDB(ctx, server.GetDB()); err != nil {
+		log.Fatalf("server: failed to hydrate tree from DB: %v", err)
+	}
+	log.Printf("server: tree hydrated from database")
+
+	rootStats := serverTree.GetDirStats(0)

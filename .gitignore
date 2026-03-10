@@ -1,2 +1,9 @@
 /data/
 /.gocache/
+
+# Binaries
+/server
+/bin/
+
+# Frontend (managed separately as git worktree)
+/web/

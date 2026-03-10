@@ -46,6 +46,12 @@ func main() {
 	defer server.GetDB().Close()
 	log.Printf("server: database connected, schema migrated")
 
+	// 3. Hydrate tree from database.
+	if err := serverTree.HydrateFromDB(ctx, server.GetDB()); err != nil {
+		log.Fatalf("server: failed to hydrate tree from DB: %v", err)
+	}
+	log.Printf("server: tree hydrated from database")
+
 	rootStats := server.Tree.GetDirStats(0)
 	log.Printf("server: state initialized: %d total, %d downloaded, %d verified, %d archived, %d failed, %d conflicts",
 		rootStats.Total, rootStats.Downloaded, rootStats.Verified, rootStats.Archived, rootStats.Failed, rootStats.Conflict)

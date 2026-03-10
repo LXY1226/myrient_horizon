@@ -1,0 +1,4 @@
+recomputeAllStatsLocked() True
+fileHashes True
+ReportCount True
+HasConflict True

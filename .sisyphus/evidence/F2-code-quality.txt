@@ -1,0 +1,110 @@
+F2 Code Quality Review
+Date: 2026-03-09
+Scope:
+- internal/server/db.go (ScanAllItemStatus around line 250)
+- internal/server/tree.go (ApplyReport around line 122, HydrateFromDB around line 160, bubbleDelta around line 222)
+- cmd/server/main.go (startup wiring around line 51)
+- internal/server/tree_test.go (unit tests)
+
+Checks Run:
+1) go vet ./...
+- Result: PASS (no issues reported)
+
+2) gofmt -d .
+- Result: FAIL (formatting diffs exist)
+- Files reported:
+  - cmd/verifier/main.go
+  - cmd/worker/main.go
+- Note: these are outside the reviewed target files.
+
+3) TODO/FIXME scan (Go files)
+- Matches found in:
+  - internal/worker/reporter.go
+  - internal/server/handler.go
+- No TODO/FIXME found in the 4 reviewed target files.
+
+Per-file Quality Scores (1-10):
+- internal/server/db.go: 8/10
+- internal/server/tree.go: 7/10
+- cmd/server/main.go: 8.5/10
+- internal/server/tree_test.go: 8.5/10
+
+Issues Found
+
+[critical]
+- None in reviewed files.
+
+[warning]
+1) internal/server/db.go
+- ItemStatus.FileID is int32 while DB schema uses BIGINT (file_id).
+- Risk: overflow/scan mismatch if file IDs exceed int32 range.
+- Location: internal/server/db.go:214 with usage at internal/server/db.go:250 and internal/server/db.go:260
+
+2) internal/server/tree.go
+- ApplyReport stores incoming sha1 slice without copying:
+  - st.fileHashes[fileID][workerID] = sha1
+- Risk: caller can mutate backing array after call, causing inconsistent conflict state and non-obvious data races with shared buffers.
+- Location: internal/server/tree.go:139
+
+3) internal/server/tree.go
+- HydrateFromDB holds write lock for full DB scan duration.
+- Risk: prolonged lock contention; all readers/writers blocked during hydration on large datasets.
+- Location: internal/server/tree.go:168-198
+
+[minor]
+1) internal/server/tree.go
+- ReportCount is uint8; can overflow above 255 reporters.
+- Likely acceptable in current deployment, but implicit cap is undocumented.
+- Location: internal/server/tree.go:33 and internal/server/tree.go:144,202
+
+2) cmd/server/main.go
+- Uses global singleton access patterns (GetDB/GetTree) and log.Fatalf in startup path; idiomatic for simple services but reduces composability/testability.
+- Location: cmd/server/main.go:47-55
+
+Quality Observations by File
+
+internal/server/db.go
+- Good: idiomatic row iteration, callback error propagation, rows.Err() checked, no silent failures.
+- Concern: FileID type mismatch vs schema BIGINT.
+
+internal/server/tree.go
+- Good: mutex discipline is consistent; lock held for all mutable state updates; delta bubbling logic is compact and clear.
+- Good: out-of-range DB rows are safely logged and skipped.
+- Concern: sha1 aliasing in ApplyReport; long lock hold during hydration.
+
+cmd/server/main.go
+- Good: clear startup sequence, graceful shutdown, signal handling, contextual logging.
+- Good: hydration failure handled explicitly.
+- Minor: architecture is singleton-heavy (acceptable, but less testable).
+
+internal/server/tree_test.go
+- Good: tests are meaningful, not smoke-only.
+- Good: validates state reset, best-status aggregation, conflict detection, conflict bubbling, and hash-copy behavior in hydration path.
+- Gap: no direct test ensuring ApplyReport copies sha1 defensively.
+
+Recommendations
+
+1) Align file ID typing end-to-end
+- Change ItemStatus.FileID from int32 to int64 in internal/server/db.go and corresponding usage sites.
+- This matches BIGINT and prevents overflow edge cases.
+
+2) Defensively copy sha1 in ApplyReport
+- Replace assignment with copied bytes (same approach already used in hydrate path):
+  - st.fileHashes[fileID][workerID] = append([]byte(nil), sha1...)
+- Adds safety against caller-side buffer reuse/mutation.
+
+3) Reduce lock hold time during hydration (if startup latency/contension matters)
+- Scan DB into temporary structures first, then acquire lock and apply in-memory.
+- Keeps correctness while reducing blocking window.
+
+4) Add one targeted unit test
+- New test: mutate sha1 input after ApplyReport and assert stored hash/conflict state remains unchanged.
+
+5) Address repo-wide formatting drift
+- Run gofmt on cmd/verifier/main.go and cmd/worker/main.go to keep CI/style hygiene clean.
+
+Overall Quality Verdict: NEEDS_IMPROVEMENT
+
+Rationale:
+- No critical correctness failures observed in target files.
+- However, one type-safety mismatch (int32 vs BIGINT) and one mutability hazard (sha1 aliasing in ApplyReport) warrant fixes before considering this fully production-hardened.

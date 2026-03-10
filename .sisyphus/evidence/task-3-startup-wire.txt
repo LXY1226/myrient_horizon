@@ -1,0 +1,3 @@
+Has server.InitDB: True
+Has HydrateFromDB: True
+Hydrate before logging stats: True

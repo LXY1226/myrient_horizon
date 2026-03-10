@@ -1,0 +1,72 @@
+F4 Scope Fidelity Check
+
+Changed files (tracked, from git diff --name-only):
+- .sisyphus/boulder.json
+- cmd/server/main.go
+- internal/server/db.go
+- internal/server/tree.go
+- server
+
+Untracked files (from git ls-files --others --exclude-standard):
+- .sisyphus/evidence/task-1-db-scan-query.txt
+- .sisyphus/evidence/task-1-db-scan.txt
+- .sisyphus/evidence/task-2-go-test-all.txt
+- .sisyphus/evidence/task-2-hydrate-method.txt
+- .sisyphus/evidence/task-2-tree-hydration-build.txt
+- .sisyphus/evidence/task-2-tree-hydration.txt
+- .sisyphus/evidence/task-3-error-handling.txt
+- .sisyphus/evidence/task-3-startup-build.txt
+- .sisyphus/evidence/task-3-startup-wire.txt
+- .sisyphus/evidence/task-5-build.txt
+- .sisyphus/evidence/task-5-tests.txt
+- .sisyphus/evidence/verify-recovery.sh
+- .sisyphus/notepads/server-item-status-recovery/learnings.md
+- .sisyphus/plans/server-item-status-recovery-minimal.md
+- bin/goimports
+- bin/golangci-lint
+- conflict_bubbling_fix_evidence.md
+- internal/server/tree_test.go
+- web/
+
+Must NOT Have checks:
+- No new REST endpoints added: PASS
+- No changes to protocol.TaskStatus semantics: PASS
+- No revival of deprecated claimed_* tracking: PASS
+- No pagination/chunking complexity: PASS
+- No ORM layers introduced: PASS
+- No intermediate slice loading of all DB rows: PASS
+- No changes to worker/frontend/WebSocket protocols: PASS
+- No new dependencies added: PASS
+
+Allowed changes present:
+- DB scanner for full table (streaming): PASS
+  Evidence: internal/server/db.go adds ScanAllItemStatus using rows.Next() streaming scan.
+- Tree hydration method: PASS
+  Evidence: internal/server/tree.go adds HydrateFromDB and hydrateFromItemStatus.
+- Startup wiring: PASS
+  Evidence: cmd/server/main.go calls serverTree.HydrateFromDB(...) during startup.
+- Conflict bubbling fix: PASS
+  Evidence: internal/server/tree.go updates bubbleDelta signature/logic with oldConflict/newConflict handling.
+- Unit tests: PASS
+  Evidence: internal/server/tree_test.go adds TestHydrateFromDB and TestConflictBubbling.
+
+File change audit vs expected set:
+Expected:
+- internal/server/db.go
+- internal/server/tree.go
+- cmd/server/main.go
+- internal/server/tree_test.go
+
+Observed beyond expected (scope creep indicators):
+- .sisyphus/boulder.json (tracked modification)
+- server (tracked binary modification)
+- multiple .sisyphus evidence/planning artifacts
+- bin/goimports, bin/golangci-lint
+- conflict_bubbling_fix_evidence.md
+- web/ (untracked directory)
+
+Scope creep identified: YES (workspace contains unexpected changed/untracked files outside expected minimal fix set)
+
+Overall fidelity verdict: SCOPE_CREEP
+
+Key nuance: the **code-level fix itself** appears minimal and aligned in `internal/server/db.go`, `internal/server/tree.go`, `cmd/server/main.go`, and `internal/server/tree_test.go`; the **overall workspace** fails strict F4 due to additional changed/untracked files.
