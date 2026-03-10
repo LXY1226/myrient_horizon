@@ -1,0 +1,4 @@
+Command: go build ./cmd/server
+
+
+Build succeeded

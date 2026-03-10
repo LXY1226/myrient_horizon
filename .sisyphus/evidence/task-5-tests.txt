@@ -1,0 +1,3 @@
+Command: go test ./internal/server/...
+
+ok  	myrient-horizon/internal/server	(cached)

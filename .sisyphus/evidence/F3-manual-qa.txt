@@ -1,0 +1,99 @@
+F3 Manual QA - Real Verification (Read-Only Planning Pass)
+Date: 2026-03-09
+Mode: READ_ONLY (no state-changing commands executed in this pass)
+
+Build status: SUCCESS (from existing evidence)
+- Evidence:
+  - .sisyphus/evidence/task-5-build.txt: "Command: go build ./cmd/server" + "Build succeeded"
+  - .sisyphus/evidence/task-9-sweep.txt: "go build ./cmd/server - SUCCESS"
+
+Compile verification:
+- Current pass did not execute build due read-only constraint.
+- Latest available evidence indicates server compiles successfully.
+
+Verification script review (.sisyphus/evidence/verify-recovery.sh):
+- Script runs `go build ./cmd/server`
+- Manual checks documented in script align with expected recovery behavior:
+  - recovered status counters from item_status
+  - conflict detection on mismatched SHA1
+  - report count restoration
+  - out-of-range file_id ignored
+
+Server startup check:
+- Not executed in this pass (read-only constraint prevents runtime launch).
+- Startup wiring in code is correct:
+  - cmd/server/main.go calls InitDB, then HydrateFromDB, then logs root stats, then registers handlers and starts server.
+
+Code review verification:
+1) API endpoints exist and signatures are intact
+- Registered routes in internal/server/handler.go:
+  - POST /api/register
+  - GET /api/ws
+  - PATCH /api/manage/worker/{id}/config
+  - GET /api/manage/workers
+  - GET /api/manage/conflicts
+  - GET /api/stats/overview
+  - GET /api/stats/tree
+  - GET /api/stats/stream
+  - GET /api/stats/worker/{id}
+  - GET /api/stats/dir
+- Handlers use standard signature: func (h *Handler) handleX(w http.ResponseWriter, r *http.Request)
+
+2) handler.go stats path still uses GetTree() (no DB queries added for stats)
+- handleOverview, handleTree, handleSSEStream/sendSSEDirStats, handleDirDetail all read from GetTree()
+- GetDB() calls only appear in auth/register/worker management paths, not stats aggregation routes
+
+3) HydrateFromDB call placement in startup is correct
+- cmd/server/main.go sequence:
+  - LoadTree
+  - InitDB
+  - serverTree.HydrateFromDB(ctx, server.GetDB())
+  - root stats log
+  - handler/hub setup and server listen
+
+4) Conflict bubbling logic review
+- internal/server/tree.go:
+  - ApplyReport computes old/new conflict and calls bubbleDelta up ancestor chain
+  - bubbleDelta updates status counters and Conflict++/-- for each ancestor
+  - HydrateFromDB rebuilds per-file state and then recomputeAllStatsLocked()
+  - recomputeAllStatsLocked counts conflicts over each directory's FileStart:FileEnd span (includes descendants), matching bubbling semantics
+- Result: conflict propagation logic appears correct and consistent for both live reports and DB hydration recovery.
+
+Manual test plan (runtime verification to execute in non-read-only mode):
+1. Build and start
+- go build ./cmd/server
+- ./server -addr :8099 -db "<dsn>" -data "<data-dir>"
+
+2. Verify overview and tree after startup
+- curl -sS http://127.0.0.1:8099/api/stats/overview | jq
+- curl -sS "http://127.0.0.1:8099/api/stats/tree?depth=2" | jq
+- curl -sS "http://127.0.0.1:8099/api/stats/dir?path=/" | jq
+
+3. Conflict-focused verification
+- Seed item_status with:
+  - same SHA1 from multiple workers for one file
+  - differing SHA1 from multiple workers for another file
+- Re-start server, then re-run overview/tree/dir endpoints
+- Confirm:
+  - conflicting file contributes to conflict counts
+  - ancestor directories reflect bubbled conflict totals
+  - report counts restored after restart
+  - out-of-range file_id rows do not affect totals (watch logs and counters)
+
+Expected success log indicators:
+- "server: tree hydrated from database"
+- "server: state initialized: ... conflicts=<n>"
+- No "failed to hydrate tree from DB" fatal log
+
+Failure indicators:
+- build errors
+- startup fatal at hydration
+- stats endpoints return 5xx
+- conflict totals do not change with mismatched SHA1 inputs
+- out-of-range file_id rows alter totals instead of being ignored
+
+Runtime issues discovered in this pass:
+- None from static review.
+- Runtime launch not performed due read-only constraint.
+
+Overall QA verdict: READY_FOR_DEPLOY (conditional on executing runtime manual test plan once in writable/exec mode)

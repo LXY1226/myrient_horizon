@@ -1,0 +1,65 @@
+F1 Plan Compliance Audit
+========================
+
+1. All 5 TODO tasks marked complete
+- PASS
+- Evidence: `.sisyphus/plans/server-item-status-recovery-minimal.md` shows `[x]` for tasks 1-5 at lines 89, 133, 182, 227, and 275.
+
+2. Deliverables implemented
+- PASS: `internal/server/db.go` unfiltered `item_status` row scanner
+  - Evidence: `internal/server/db.go:250` defines `func (s *Store) ScanAllItemStatus(...)` with `SELECT worker_id, file_id, status, sha1, crc32 FROM item_status`.
+- PASS: `internal/server/tree.go` tree hydration entrypoint
+  - Evidence: `internal/server/tree.go:161` defines `HydrateFromDB`, and `internal/server/tree.go:167` defines the bulk hydration path.
+- PASS: `internal/server/tree.go` corrected conflict-aware bubbling
+  - Evidence: `internal/server/tree.go:133`, `internal/server/tree.go:155`, and `internal/server/tree.go:230` track `oldConflict`/`newConflict` and update `Conflict`.
+- PASS: `cmd/server/main.go` startup call to hydrate tree
+  - Evidence: `cmd/server/main.go:51` calls `serverTree.HydrateFromDB(...)` before serving traffic.
+- PASS: minimal regression verification present
+  - Evidence: `internal/server/tree_test.go:10` covers hydration and `internal/server/tree_test.go:93` covers conflict bubbling.
+
+3. Definition of Done
+- PASS: Server hydrates from DB on startup
+  - Evidence: `cmd/server/main.go:51` plus `internal/server/tree.go:161`.
+- FAIL: `/api/stats/overview` shows recovered stats
+  - Reason: handler is tree-backed at `internal/server/handler.go:205`, but planned evidence file `.sisyphus/evidence/task-5-overview.json` is missing.
+- FAIL: Conflict counts update correctly
+  - Reason: code and unit test support this (`internal/server/tree_test.go:93`), but the planned task-4 evidence artifact is missing, so plan verification is incomplete.
+- FAIL: `go test ./...` passes
+  - Evidence: `.sisyphus/evidence/task-2-go-test-all.txt` shows `panic: test timed out after 10m0s` and `FAIL myrient-horizon/cmd/server`.
+
+4. No scope violations
+- PASS: No new REST endpoints added
+  - Evidence: stats routes remain existing handlers in `internal/server/handler.go:88` and `internal/server/handler.go:89`.
+- PASS: No status semantics changed
+  - Evidence: `internal/server/tree.go:149` still uses highest-status-wins logic.
+- PASS: `claimed_*` not revived
+  - Evidence: existing claimed fields remain in `internal/server/tree.go:331` and `internal/server/tree.go:384`, but the new hydration/bubbling logic does not rebuild or mutate claimed state.
+- PASS: No ORM/pagination added
+  - Evidence: DB access remains direct SQL scans in `internal/server/db.go:230` and `internal/server/db.go:250`.
+
+5. Evidence files exist for all 5 tasks
+- FAIL
+- Task 1 evidence exists:
+  - `.sisyphus/evidence/task-1-db-scan.txt`
+  - `.sisyphus/evidence/task-1-db-scan-query.txt`
+- Task 2 evidence exists:
+  - `.sisyphus/evidence/task-2-tree-hydration.txt`
+  - `.sisyphus/evidence/task-2-tree-hydration-build.txt`
+- Task 3 evidence exists:
+  - `.sisyphus/evidence/task-3-startup-wire.txt`
+  - `.sisyphus/evidence/task-3-startup-build.txt`
+  - `.sisyphus/evidence/task-3-error-handling.txt`
+- Task 4 evidence missing:
+  - Expected `.sisyphus/evidence/task-4-conflict-bubble.txt`
+  - Expected `.sisyphus/evidence/task-4-conflict-build.txt`
+- Task 5 evidence incomplete:
+  - Present: `.sisyphus/evidence/task-5-tests.txt`, `.sisyphus/evidence/task-5-build.txt`
+  - Missing planned API evidence: `.sisyphus/evidence/task-5-overview.json`, `.sisyphus/evidence/task-5-tree.json`
+
+Summary of deviations from plan
+- Repo-wide `go test ./...` is not passing per the available evidence.
+- Planned API verification evidence for recovered `/api/stats/overview` and `/api/stats/tree` is missing.
+- Planned task-4 conflict-bubbling evidence files are missing.
+
+Overall compliance verdict
+- NEEDS_FIX
