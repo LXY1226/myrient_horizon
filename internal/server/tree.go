@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"log"
 	"sync"
 
@@ -129,7 +130,7 @@ func (st *ServerTree) ApplyReport(fileID int64, workerID int, status protocol.Ta
 
 	file := &st.base.Files[fileID]
 	oldStatus := file.Ext.BestStatus
-
+	oldConflict := file.Ext.HasConflict
 	// Track per-worker SHA1 for conflict detection.
 	if sha1 != nil {
 		if st.fileHashes[fileID] == nil {
@@ -151,9 +152,59 @@ func (st *ServerTree) ApplyReport(fileID int64, workerID int, status protocol.Ta
 	}
 
 	// Check for SHA1 conflicts.
-	file.Ext.HasConflict = st.hasConflictLocked(fileID)
+	newConflict := st.hasConflictLocked(fileID)
+	file.Ext.HasConflict = newConflict
 	// Bubble dirExt delta up the ancestor chain.
-	st.bubbleDelta(file.DirIdx, oldStatus, file.Ext.BestStatus, file.Ext.HasConflict, file.Size)
+	st.bubbleDelta(file.DirIdx, oldStatus, file.Ext.BestStatus, oldConflict, newConflict, file.Size)
+}
+
+func (st *ServerTree) HydrateFromDB(ctx context.Context, db *Store) error {
+	return st.hydrateFromItemStatus(func(fn func(*ItemStatus) error) error {
+		return db.ScanAllItemStatus(ctx, fn)
+	})
+}
+
+func (st *ServerTree) hydrateFromItemStatus(scan func(func(*ItemStatus) error) error) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	for i := range st.base.Files {
+		st.base.Files[i].Ext = FileExt{}
+	}
+	st.fileHashes = make([]map[int][]byte, len(st.base.Files))
+
+	err := scan(func(item *ItemStatus) error {
+		fileID := int(item.FileID)
+		if fileID < 0 || fileID >= len(st.base.Files) {
+			log.Printf("tree: skipping item_status for out-of-range file_id=%d worker_id=%d", item.FileID, item.WorkerID)
+			return nil
+		}
+
+		file := &st.base.Files[fileID]
+		status := protocol.TaskStatus(item.Status)
+		if status > file.Ext.BestStatus {
+			file.Ext.BestStatus = status
+		}
+
+		if st.fileHashes[fileID] == nil {
+			st.fileHashes[fileID] = make(map[int][]byte)
+		}
+		st.fileHashes[fileID][item.WorkerID] = append([]byte(nil), item.SHA1...)
+
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	for fileID := range st.base.Files {
+		hashes := st.fileHashes[fileID]
+		st.base.Files[fileID].Ext.ReportCount = uint8(len(hashes))
+		st.base.Files[fileID].Ext.HasConflict = st.hasConflictLocked(int64(fileID))
+	}
+
+	st.recomputeAllStatsLocked()
+	return nil
 }
 
 // hasConflictLocked checks if a file has SHA1 conflicts among reporters.
@@ -176,14 +227,19 @@ func (st *ServerTree) hasConflictLocked(fileID int64) bool {
 }
 
 // bubbleDelta updates dirExt along the ancestor chain when a file's status changes.
-func (st *ServerTree) bubbleDelta(dirID int32, oldStatus, newStatus protocol.TaskStatus, hasConflict bool, fileSize int64) {
-	if oldStatus == newStatus {
+func (st *ServerTree) bubbleDelta(dirID int32, oldStatus, newStatus protocol.TaskStatus, oldConflict, newConflict bool, fileSize int64) {
+	if oldStatus == newStatus && oldConflict == newConflict {
 		return
 	}
 	for id := dirID; id >= 0; id = st.base.Dirs[id].ParentIdx {
 		s := &st.base.Dirs[id].Ext
 		decrStatus(s, oldStatus, fileSize)
 		incrStatus(s, newStatus, fileSize)
+		if oldConflict && !newConflict {
+			s.Conflict--
+		} else if !oldConflict && newConflict {
+			s.Conflict++
+		}
 	}
 }
 

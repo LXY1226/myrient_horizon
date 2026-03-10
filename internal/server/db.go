@@ -247,6 +247,26 @@ func (s *Store) ScanAllItemStatusByWorker(ctx context.Context, workerID int, fn 
 	return rows.Err()
 }
 
+func (s *Store) ScanAllItemStatus(ctx context.Context, fn func(*ItemStatus) error) error {
+	rows, err := s.pool.Query(ctx,
+		`SELECT worker_id, file_id, status, sha1, crc32 FROM item_status`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var item ItemStatus
+		if err := rows.Scan(&item.WorkerID, &item.FileID, &item.Status, &item.SHA1, &item.CRC32); err != nil {
+			return err
+		}
+		if err := fn(&item); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
 type Reclaim struct {
 	ID        int       `json:"id"`
 	WorkerID  int       `json:"worker_id"`
