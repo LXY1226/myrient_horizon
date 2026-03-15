@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log"
 	"sync"
 
@@ -40,14 +41,12 @@ type ServerTree struct {
 	mu   sync.RWMutex
 	base *mt.Tree[DirExt, FileExt]
 	// Per-file: track known SHA1 per worker for conflict detection.
-	// Key: global file index. Value: map[workerID]sha1Bytes.
-	fileHashes []map[int][]byte
+	// Key: global file index. Value: map[workerKey]sha1Bytes.
+	fileHashes []map[string][]byte
 }
 
 var (
 	treeInstance *ServerTree
-	treeOnce     sync.Once
-	treeInitErr  error
 	treeSHA1     string
 )
 
@@ -78,7 +77,7 @@ func LoadTree(path string) error {
 func NewTree(base *mt.Tree[DirExt, FileExt]) *ServerTree {
 	st := &ServerTree{
 		base:       base,
-		fileHashes: make([]map[int][]byte, len(base.Files)),
+		fileHashes: make([]map[string][]byte, len(base.Files)),
 	}
 	// Initialize Total counts by walking the tree bottom-up.
 	st.initTotals()
@@ -113,7 +112,7 @@ func (st *ServerTree) initTotals() {
 }
 
 // ApplyReport processes a single file status report using fileID (global file index).
-func (st *ServerTree) ApplyReport(fileID int64, workerID int, status protocol.TaskStatus, sha1 []byte) {
+func (st *ServerTree) ApplyReport(fileID int64, workerKey string, status protocol.TaskStatus, sha1 []byte) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 
@@ -127,9 +126,9 @@ func (st *ServerTree) ApplyReport(fileID int64, workerID int, status protocol.Ta
 	// Track per-worker SHA1 for conflict detection.
 	if sha1 != nil {
 		if st.fileHashes[fileID] == nil {
-			st.fileHashes[fileID] = make(map[int][]byte)
+			st.fileHashes[fileID] = make(map[string][]byte)
 		}
-		st.fileHashes[fileID][workerID] = sha1
+		st.fileHashes[fileID][workerKey] = append([]byte(nil), sha1...)
 	}
 
 	// Update ReportCount.
@@ -152,24 +151,53 @@ func (st *ServerTree) ApplyReport(fileID int64, workerID int, status protocol.Ta
 }
 
 func (st *ServerTree) HydrateFromDB(ctx context.Context, db *Store) error {
-	return st.hydrateFromItemStatus(func(fn func(*ItemStatus) error) error {
-		return db.ScanAllItemStatus(ctx, fn)
+	var reclaims []Reclaim
+	err := db.ScanAllReclaims(ctx, func(reclaim *Reclaim) error {
+		reclaims = append(reclaims, *reclaim)
+		return nil
 	})
+	if err != nil {
+		return err
+	}
+
+	return st.hydrateFromState(func(fn func(*ItemStatus) error) error {
+		return db.ScanAllItemStatus(ctx, fn)
+	}, reclaims)
 }
 
 func (st *ServerTree) hydrateFromItemStatus(scan func(func(*ItemStatus) error) error) error {
+	return st.hydrateFromState(scan, nil)
+}
+
+func (st *ServerTree) RefreshClaimsFromDB(ctx context.Context, db *Store) error {
+	var reclaims []Reclaim
+	err := db.ScanAllReclaims(ctx, func(reclaim *Reclaim) error {
+		reclaims = append(reclaims, *reclaim)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.recomputeClaimedStatsLocked(reclaims)
+	return nil
+}
+
+func (st *ServerTree) hydrateFromState(scan func(func(*ItemStatus) error) error, reclaims []Reclaim) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 
 	for i := range st.base.Files {
 		st.base.Files[i].Ext = FileExt{}
 	}
-	st.fileHashes = make([]map[int][]byte, len(st.base.Files))
+	st.fileHashes = make([]map[string][]byte, len(st.base.Files))
 
 	err := scan(func(item *ItemStatus) error {
 		fileID := int(item.FileID)
 		if fileID < 0 || fileID >= len(st.base.Files) {
-			log.Printf("tree: skipping item_status for out-of-range file_id=%d worker_id=%d", item.FileID, item.WorkerID)
+			log.Printf("tree: skipping item_status for out-of-range file_id=%d worker=%s", item.FileID, summarizeWorkerKey(item.WorkerKey))
 			return nil
 		}
 
@@ -180,9 +208,9 @@ func (st *ServerTree) hydrateFromItemStatus(scan func(func(*ItemStatus) error) e
 		}
 
 		if st.fileHashes[fileID] == nil {
-			st.fileHashes[fileID] = make(map[int][]byte)
+			st.fileHashes[fileID] = make(map[string][]byte)
 		}
-		st.fileHashes[fileID][item.WorkerID] = append([]byte(nil), item.SHA1...)
+		st.fileHashes[fileID][item.WorkerKey] = append([]byte(nil), item.SHA1...)
 
 		return nil
 	})
@@ -196,7 +224,7 @@ func (st *ServerTree) hydrateFromItemStatus(scan func(func(*ItemStatus) error) e
 		st.base.Files[fileID].Ext.HasConflict = st.hasConflictLocked(int64(fileID))
 	}
 
-	st.recomputeAllStatsLocked()
+	st.recomputeAllStatsLocked(reclaims)
 	return nil
 }
 
@@ -270,7 +298,7 @@ func incrStatus(s *DirExt, status protocol.TaskStatus, size int64) {
 
 // recomputeAllStatsLocked rebuilds all dirExt from scratch.
 // Used after bulk recovery to ensure consistency. Caller must hold write lock.
-func (st *ServerTree) recomputeAllStatsLocked() {
+func (st *ServerTree) recomputeAllStatsLocked(reclaims []Reclaim) {
 	for i := range st.base.Dirs {
 		st.base.Dirs[i].Ext = DirExt{}
 	}
@@ -288,6 +316,111 @@ func (st *ServerTree) recomputeAllStatsLocked() {
 			}
 		}
 	}
+
+	st.recomputeClaimedStatsLocked(reclaims)
+}
+
+func (st *ServerTree) recomputeClaimedStatsLocked(reclaims []Reclaim) {
+	for i := range st.base.Dirs {
+		st.base.Dirs[i].Ext.Claimed = 0
+		st.base.Dirs[i].Ext.ClaimedSize = 0
+	}
+	if len(reclaims) == 0 || len(st.base.Files) == 0 || len(st.base.Dirs) == 0 {
+		return
+	}
+
+	type ownerClaims struct {
+		whitelist map[int32]struct{}
+		blacklist map[int32]struct{}
+	}
+	owners := make(map[string]*ownerClaims)
+	for _, reclaim := range reclaims {
+		if reclaim.DirID < 0 || reclaim.DirID >= len(st.base.Dirs) {
+			log.Printf("tree: skipping reclaim for out-of-range dir_id=%d owner=%s", reclaim.DirID, summarizeWorkerKey(reclaimOwnerKey(reclaim)))
+			continue
+		}
+		ownerKey := reclaimOwnerKey(reclaim)
+		claims := owners[ownerKey]
+		if claims == nil {
+			claims = &ownerClaims{
+				whitelist: make(map[int32]struct{}),
+				blacklist: make(map[int32]struct{}),
+			}
+			owners[ownerKey] = claims
+		}
+		dirID := int32(reclaim.DirID)
+		if reclaim.IsBlack {
+			claims.blacklist[dirID] = struct{}{}
+			continue
+		}
+		claims.whitelist[dirID] = struct{}{}
+	}
+	if len(owners) == 0 {
+		return
+	}
+
+	claimedFiles := make([]bool, len(st.base.Files))
+	for _, claims := range owners {
+		if len(claims.whitelist) == 0 {
+			continue
+		}
+
+		dirClaimed := make([]bool, len(st.base.Dirs))
+		type state struct {
+			dirID       int32
+			whitelisted bool
+			blocked     bool
+		}
+		stack := []state{{dirID: 0}}
+		for len(stack) > 0 {
+			current := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+
+			if _, ok := claims.blacklist[current.dirID]; ok {
+				current.blocked = true
+			}
+			if _, ok := claims.whitelist[current.dirID]; ok {
+				current.whitelisted = true
+			}
+			dirClaimed[current.dirID] = current.whitelisted && !current.blocked
+
+			for _, childID := range st.base.Dirs[current.dirID].SubDirs {
+				stack = append(stack, state{dirID: childID, whitelisted: current.whitelisted, blocked: current.blocked})
+			}
+		}
+
+		for fileID, file := range st.base.Files {
+			if dirClaimed[file.DirIdx] {
+				claimedFiles[fileID] = true
+			}
+		}
+	}
+
+	claimedPrefix := make([]int32, len(st.base.Files)+1)
+	claimedSizePrefix := make([]int64, len(st.base.Files)+1)
+	for fileID, file := range st.base.Files {
+		claimedPrefix[fileID+1] = claimedPrefix[fileID]
+		claimedSizePrefix[fileID+1] = claimedSizePrefix[fileID]
+		if !claimedFiles[fileID] {
+			continue
+		}
+		claimedPrefix[fileID+1]++
+		claimedSizePrefix[fileID+1] += file.Size
+	}
+
+	for dirID := range st.base.Dirs {
+		dir := st.base.Dirs[dirID]
+		stats := &st.base.Dirs[dirID].Ext
+		stats.Claimed = claimedPrefix[dir.FileEnd] - claimedPrefix[dir.FileStart]
+		stats.ClaimedSize = claimedSizePrefix[dir.FileEnd] - claimedSizePrefix[dir.FileStart]
+	}
+}
+
+func reclaimOwnerKey(reclaim Reclaim) string {
+	if reclaim.WorkerKey != "" {
+		return reclaim.WorkerKey
+	}
+	return fmt.Sprintf("worker-id:%d", reclaim.WorkerID)
 }
 
 // ChildStats pairs a directory name with its stats.
@@ -295,6 +428,28 @@ type ChildStats struct {
 	Name  string `json:"name"`
 	DirID int32  `json:"dir_id"`
 	Stats DirExt `json:"stats"`
+}
+
+type TreeClaimWorker struct {
+	WorkerID int    `json:"worker_id"`
+	Name     string `json:"name"`
+}
+
+type TreeClaimGroup struct {
+	Count   int               `json:"count"`
+	Workers []TreeClaimWorker `json:"workers"`
+}
+
+type TreeClaims struct {
+	Whitelist TreeClaimGroup `json:"whitelist"`
+	Blacklist TreeClaimGroup `json:"blacklist"`
+}
+
+func emptyTreeClaims() TreeClaims {
+	return TreeClaims{
+		Whitelist: TreeClaimGroup{Workers: []TreeClaimWorker{}},
+		Blacklist: TreeClaimGroup{Workers: []TreeClaimWorker{}},
+	}
 }
 
 // ChildDirStats returns stats for all immediate subdirectories of a directory.
@@ -330,6 +485,7 @@ type TreeNode struct {
 	DownloadedSize  int64      `json:"downloaded_size"`
 	VerifiedSize    int64      `json:"verified_size"`
 	ArchivedSize    int64      `json:"archived_size"`
+	Claims          TreeClaims `json:"claims"`
 	Children        []TreeNode `json:"children,omitempty"`
 }
 
@@ -360,6 +516,7 @@ func (st *ServerTree) buildTreeNodesLocked(dirID int32, maxDepth, depth int) []T
 			DownloadedSize:  s.DownloadedSize,
 			VerifiedSize:    s.VerifiedSize,
 			ArchivedSize:    s.ArchivedSize,
+			Claims:          emptyTreeClaims(),
 		}
 		if depth < maxDepth-1 && len(st.base.Dirs[subID].SubDirs) > 0 {
 			node.Children = st.buildTreeNodesLocked(subID, maxDepth, depth+1)

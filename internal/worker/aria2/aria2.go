@@ -18,6 +18,7 @@ import (
 // Client manages an aria2c subprocess and communicates via JSON-RPC over WebSocket.
 type Client struct {
 	cmd       *exec.Cmd
+	ownsProc  bool
 	rpcURL    string
 	conn      *websocket.Conn
 	wmu       sync.Mutex // protects writes to conn
@@ -67,14 +68,20 @@ func NewClient(cfg Config) (*Client, error) {
 			return nil, fmt.Errorf("connect to external aria2: %w", err)
 		}
 	} else {
-		// Managed mode: start subprocess + connect.
+		// Local mode: prefer an existing aria2 RPC on the configured port.
 		c.rpcURL = fmt.Sprintf("ws://localhost:%d/jsonrpc", cfg.RPCPort)
-		if err := c.start(cfg); err != nil {
-			return nil, err
-		}
-		time.Sleep(500 * time.Millisecond)
-		if err := c.connect(); err != nil {
-			return nil, fmt.Errorf("connect to aria2c: %w", err)
+		if err := c.connectQuick(); err == nil {
+			log.Printf("aria2: reusing existing aria2 RPC at %s", c.rpcURL)
+		} else {
+			log.Printf("aria2: no existing RPC at %s, starting bundled aria2 (%v)", c.rpcURL, err)
+			if err := c.start(cfg); err != nil {
+				return nil, err
+			}
+			log.Printf("aria2: worker launched its own aria2 instance on %s", c.rpcURL)
+			time.Sleep(500 * time.Millisecond)
+			if err := c.connect(); err != nil {
+				return nil, fmt.Errorf("connect to aria2c: %w", err)
+			}
 		}
 	}
 
@@ -97,10 +104,6 @@ func (c *Client) start(cfg Config) error {
 		fmt.Sprintf("--rpc-listen-port=%d", cfg.RPCPort),
 		fmt.Sprintf("--dir=%s", downloadDir),
 		fmt.Sprintf("--conf=%s", cfg.ConfPath),
-		"--rpc-listen-all=false",
-		"--auto-file-renaming=false",
-		"--allow-overwrite=false",
-		"--continue=true",
 	}
 
 	args = append(args, cfg.ExtraArgs...)
@@ -111,13 +114,25 @@ func (c *Client) start(cfg Config) error {
 	if err := c.cmd.Start(); err != nil {
 		return fmt.Errorf("start aria2c: %w", err)
 	}
+	c.ownsProc = true
 	log.Printf("aria2c started (pid %d) on port %d", c.cmd.Process.Pid, cfg.RPCPort)
 	return nil
 }
 
+func (c *Client) connectQuick() error {
+	return c.connectWithAttempts(1, 0)
+}
+
 func (c *Client) connect() error {
+	return c.connectWithAttempts(20, 500*time.Millisecond)
+}
+
+func (c *Client) connectWithAttempts(attempts int, delay time.Duration) error {
+	if attempts <= 0 {
+		attempts = 1
+	}
 	var err error
-	for i := 0; i < 20; i++ {
+	for i := 0; i < attempts; i++ {
 		//if c.cmd != nil {
 		//	if c.cmd.ProcessState != nil && c.cmd.ProcessState.Exited() {
 		//		log.Printf("aria2c exited unexpectedly")
@@ -129,9 +144,15 @@ func (c *Client) connect() error {
 			log.Println("Connected to aria2")
 			return nil
 		}
-		time.Sleep(500 * time.Millisecond)
+		if i < attempts-1 && delay > 0 {
+			time.Sleep(delay)
+		}
 	}
-	return fmt.Errorf("aria2c not ready after 10s: %w", err)
+	totalWait := time.Duration(attempts-1) * delay
+	if totalWait <= 0 {
+		return fmt.Errorf("aria2 RPC unavailable: %w", err)
+	}
+	return fmt.Errorf("aria2c not ready after %v: %w", totalWait, err)
 }
 
 // Done returns a channel that is closed when the current connection's readLoop exits.
@@ -141,7 +162,7 @@ func (c *Client) Done() <-chan struct{} {
 
 // Managed returns true if this client manages its own aria2c subprocess.
 func (c *Client) Managed() bool {
-	return c.cfg.ExternalRPCURL == ""
+	return c.cfg.ExternalRPCURL == "" && c.ownsProc
 }
 
 // cleanupForReconnect closes the old connection, waits for readLoop to exit,

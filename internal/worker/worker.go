@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"context"
 	"log"
 	"os"
 
@@ -44,7 +45,11 @@ func EnsureConfig() *config.WorkerConfig {
 	} else {
 		log.Println("Loaded config: worker", cfg.Name)
 	}
+	if err := config.SyncName(workDir, cfg); err != nil {
+		log.Printf("worker: failed to sync display name: %v", err)
+	}
 	config.Global = *cfg
+	InitWorkerState(workDir, cfg)
 	return cfg
 }
 
@@ -82,6 +87,7 @@ func InitWorker(aria2Client *aria2.Client) {
 	if Reporter == nil {
 		log.Fatal("InitWorker: reporter initialization failed")
 	}
+	Claims = newClaimState()
 
 	InitVerifier()
 	if Verifier == nil {
@@ -92,4 +98,6 @@ func InitWorker(aria2Client *aria2.Client) {
 	if Downloader == nil {
 		log.Fatal("InitWorker: downloader initialization failed")
 	}
+
+	Claims.RestoreCached(context.Background())
 }

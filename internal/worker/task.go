@@ -4,33 +4,63 @@ import (
 	"bytes"
 	"fmt"
 	"log"
-	mt "myrient-horizon/pkg/myrienttree"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync"
+
+	"myrient-horizon/internal/worker/config"
+	mt "myrient-horizon/pkg/myrienttree"
 )
 
 // Task is the unit flowing through downloader and verifier.
 type Task struct {
-	FileID     int32  // 全局文件索引
-	LocalPath  string // XXX for verifier, XXX.downloading for downloader
+	FileID     int32
+	LocalPath  string
 	Managed    bool
 	BadZipSHA1 []byte
 }
 
 const (
 	DownloadingSuffix = ".downloading"
+	DownloadedSuffix  = ".downloaded"
 )
 
-func (t *Task) FinalPath() string { return t.LocalPath[:len(t.LocalPath)-len(DownloadingSuffix)] }
+func (t *Task) FinalPath() string {
+	if strings.HasSuffix(t.LocalPath, DownloadingSuffix) {
+		return strings.TrimSuffix(t.LocalPath, DownloadingSuffix)
+	}
+	if strings.HasSuffix(t.LocalPath, DownloadedSuffix) {
+		return strings.TrimSuffix(t.LocalPath, DownloadedSuffix)
+	}
+	return t.LocalPath
+}
+
+func (t *Task) DownloadedPath() string {
+	if strings.HasSuffix(t.LocalPath, DownloadingSuffix) {
+		return strings.TrimSuffix(t.LocalPath, DownloadingSuffix) + DownloadedSuffix
+	}
+	if strings.HasSuffix(t.LocalPath, DownloadedSuffix) {
+		return t.LocalPath
+	}
+	return t.FinalPath() + DownloadedSuffix
+}
 
 type dirExt struct{}
-type fileExt struct{}
+
+type fileExt struct {
+	planGen        uint32
+	confirmedDone  bool
+	queuedDownload bool
+	queuedVerify   bool
+}
 
 const myrientBaseURL = "https://myrient.erista.me/files"
 
 var (
-	iTree    *mt.Tree[dirExt, fileExt]
-	TreeSHA1 string
+	iTree       *mt.Tree[dirExt, fileExt]
+	TreeSHA1    string
+	treeStateMu sync.RWMutex
 )
 
 func LoadTree(path string) {
@@ -61,8 +91,11 @@ func (t *Task) GetURI() string {
 
 func (t *Task) getPath(sb *strings.Builder) *strings.Builder {
 	f := t.GetFile()
-	sb.WriteString(iTree.Dirs[f.DirIdx].Path)
-	sb.WriteString("/")
+	dirPath := iTree.Dirs[f.DirIdx].Path
+	sb.WriteString(dirPath)
+	if !strings.HasSuffix(dirPath, "/") {
+		sb.WriteString("/")
+	}
 	sb.WriteString(f.Name)
 	return sb
 }
@@ -85,6 +118,12 @@ func (t *Task) ClearBadZipSHA1() {
 
 func MatchFileByPath(dir, name string) (int32, error) {
 	dir = strings.ReplaceAll(dir, string(os.PathSeparator), "/")
+	if dir != "" && !strings.HasSuffix(dir, "/") {
+		dir += "/"
+	}
+	if !strings.HasPrefix(dir, "/") {
+		dir = "/" + dir
+	}
 	dirID, ok := iTree.DirByPath(dir)
 	if !ok {
 		return -1, fmt.Errorf("no matching dir: %s", dir)
@@ -101,10 +140,57 @@ func MatchFileByPath(dir, name string) (int32, error) {
 }
 
 func splitRelativePath(rel string) (dirPart, fileName string) {
-	rel = strings.Trim(rel, "/")
+	rel = strings.Trim(strings.ReplaceAll(rel, string(os.PathSeparator), "/"), "/")
 	idx := strings.LastIndex(rel, "/")
 	if idx < 0 {
 		return "", rel
 	}
 	return rel[:idx], rel[idx+1:]
+}
+
+func finalLocalPath(fileID int32) string {
+	return filepath.Join(config.Global.DownloadDir, filepath.FromSlash(strings.TrimPrefix(taskPath(fileID), "/")))
+}
+
+func downloadingLocalPath(fileID int32) string {
+	return finalLocalPath(fileID) + DownloadingSuffix
+}
+
+func downloadedLocalPath(fileID int32) string {
+	return finalLocalPath(fileID) + DownloadedSuffix
+}
+
+func taskPath(fileID int32) string {
+	task := Task{FileID: fileID}
+	return task.GetPath()
+}
+
+func markFileVisited(fileID int32, planGen uint32) bool {
+	treeStateMu.Lock()
+	defer treeStateMu.Unlock()
+	ext := &iTree.Files[fileID].Ext
+	if ext.planGen == planGen {
+		return false
+	}
+	ext.planGen = planGen
+	return true
+}
+
+func fileBusyOrConfirmed(fileID int32) bool {
+	treeStateMu.RLock()
+	defer treeStateMu.RUnlock()
+	ext := iTree.Files[fileID].Ext
+	return ext.confirmedDone || ext.queuedDownload || ext.queuedVerify
+}
+
+func setFileQueuedDownload(fileID int32, queued bool) {
+	treeStateMu.Lock()
+	defer treeStateMu.Unlock()
+	iTree.Files[fileID].Ext.queuedDownload = queued
+}
+
+func setFileQueuedVerify(fileID int32, queued bool) {
+	treeStateMu.Lock()
+	defer treeStateMu.Unlock()
+	iTree.Files[fileID].Ext.queuedVerify = queued
 }

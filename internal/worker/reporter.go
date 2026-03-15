@@ -138,18 +138,25 @@ func (r *reporter) report(conn *websocket.Conn, closed *bool) {
 		} else {
 			log.Println("reporter: no response received since last sent")
 			r.lastSent = append(r.lastSent, r.verified...)
-			r.lastSentTasks = append(r.verifiedTasks, r.verifiedTasks...)
+			r.lastSentTasks = append(r.lastSentTasks, r.verifiedTasks...)
 			r.verified = nil
 			r.verifiedTasks = nil
 		}
 		r.vMu.Unlock()
 		downloading := Downloader.CurrentTask()
+		status := protocol.WorkerStatus{}
+		if Downloader != nil {
+			status.RemainDownload = Downloader.PendingCount()
+		}
+		if Verifier != nil {
+			status.QueueVerify = Verifier.Count()
+		}
 
 		report := protocol.PingMsg{
 			Version:     r.lastSentVer,
 			Verified:    r.lastSent,
 			Downloading: make([]protocol.DownloadReport, 0, len(downloading)),
-			Status:      protocol.WorkerStatus{},
+			Status:      status,
 		}
 		for _, tsk := range downloading {
 			report.Downloading = append(report.Downloading, protocol.DownloadReport{
@@ -173,6 +180,9 @@ func (r *reporter) report(conn *websocket.Conn, closed *bool) {
 // closeImpl is the internal implementation of graceful shutdown.
 func (r *reporter) closeImpl() *sync.WaitGroup {
 	r.closing = &sync.WaitGroup{}
+	if r.reportTick == nil {
+		return r.closing
+	}
 	r.closing.Add(1)
 	r.reportTick.Reset(10 * time.Millisecond)
 	return r.closing
@@ -195,7 +205,6 @@ func (r *reporter) CloseContext(ctx context.Context) *sync.WaitGroup {
 // On connection loss it automatically reconnects (unless ctx is cancelled).
 func (r *reporter) readLoop(conn *websocket.Conn) {
 	log.Println("reporter: connected to server")
-	log.Println("Use https://myrient.imlxy.net/#management=" + config.Global.Key + " to manage this worker")
 	for {
 		_, data, err := conn.ReadMessage()
 		if err != nil {
@@ -226,11 +235,18 @@ func (r *reporter) readLoop(conn *websocket.Conn) {
 			r.lastSent = nil
 			r.vMu.Unlock()
 			for _, task := range reportedTask {
-				if task.Managed {
-					err = os.Rename(task.LocalPath, task.LocalPath[:len(task.LocalPath)-len(DownloadingSuffix)])
-					if err != nil {
+				if task.Managed && strings.HasSuffix(task.LocalPath, DownloadedSuffix) {
+					err = os.Rename(task.LocalPath, task.FinalPath())
+					if err != nil && !os.IsNotExist(err) {
 						log.Printf("reporter: rename failed: %v", err)
 					}
+					downloadingControlPath := strings.TrimSuffix(task.LocalPath, DownloadedSuffix) + DownloadingSuffix + ".aria2"
+					if removeErr := os.Remove(downloadingControlPath); removeErr != nil && !os.IsNotExist(removeErr) {
+						log.Printf("reporter: remove stale aria2 control file failed: %v", removeErr)
+					}
+				}
+				if task.Managed {
+					confirmManagedFile(task.FileID)
 				}
 			}
 			if r.closing != nil {
@@ -243,7 +259,7 @@ func (r *reporter) readLoop(conn *websocket.Conn) {
 				log.Printf("reporter: bad task assign: %v", err)
 				continue
 			}
-			_ = msg // TODO generate Black-White task
+			Claims.Replace(*msg)
 		default:
 			log.Printf("reporter: unknown message type: %s", msgType)
 		}
@@ -262,6 +278,7 @@ func (r *reporter) PushVerified(t *Task, sha1, crc32 []byte) {
 	r.vMu.Lock()
 	defer r.vMu.Unlock()
 	r.verified = append(r.verified, report)
+	r.verifiedTasks = append(r.verifiedTasks, t)
 }
 
 // initReporter initializes the Reporter global from config.Global.

@@ -131,7 +131,7 @@ func (t *Tree[DirExt, FileExt]) buildDFS(fbNode *fb.Node, parentIdx int32, paren
 		if !fbNode.Children(&child, i) {
 			continue
 		}
-		if child.ChildrenLength() > 0 {
+		if isDirNode(&child) {
 			// Directory - process later to keep files contiguous.
 			subDirNodes = append(subDirNodes, i)
 		} else {
@@ -175,4 +175,8 @@ func (t *Tree[DirExt, FileExt]) FileGlobalIndex(dirID, fileIdx int32) int32 {
 func (t *Tree[DirExt, FileExt]) DirByPath(path string) (int32, bool) {
 	id, ok := t.PathIndex[path]
 	return id, ok
+}
+
+func isDirNode(node *fb.Node) bool {
+	return node.ChildrenLength() > 0 || node.Size() < 0
 }

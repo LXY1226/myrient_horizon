@@ -18,9 +18,6 @@ import (
 	"myrient-horizon/internal/worker/config"
 )
 
-// verifierRuntime is the runtime owner for file verification.
-// It manages a pool of workers that process verification tasks.
-// Replaces the old verifyTaskCh/RunVerifier function model.
 type verifierRuntime struct {
 	mu          sync.Mutex
 	concurrency int
@@ -29,19 +26,8 @@ type verifierRuntime struct {
 	wg          sync.WaitGroup
 }
 
-// Verifier is the package-global verifier runtime owner.
-// Initialized by InitVerifier() and used by commands.
 var Verifier *verifierRuntime
 
-// InitVerifier initializes the package-global Verifier runtime owner.
-// Pattern: Fail-fast bootstrap (no return value).
-// Must be called once before accessing Verifier.
-//
-// Bootstrap behavior:
-//   - Reads config.Global for settings
-//   - Ensures Reporter is initialized (panics if not)
-//   - Seeds concurrency default of 2 (from old cmd/worker/main.go)
-//   - Panics immediately on invalid state
 func InitVerifier() {
 	if config.Global.Key == "" {
 		log.Fatal("InitVerifier: config.Global not loaded (Key is empty)")
@@ -51,60 +37,42 @@ func InitVerifier() {
 	}
 
 	Verifier = &verifierRuntime{
-		concurrency: 2, // Default from old cmd/worker/main.go constant
+		concurrency: 2,
 		taskCh:      make(chan *Task, 16384),
 	}
 }
 
-// Submit queues a task for verification.
-// Non-blocking - sends to buffered channel.
-// Must only be called after InitVerifier().
 func (v *verifierRuntime) Submit(task *Task) {
 	v.taskCh <- task
 }
 
-// SetConcurrency updates the verification concurrency limit.
-// Server alignment: Dynamic configuration updates from server.
 func (v *verifierRuntime) SetConcurrency(n int) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	v.concurrency = n
 }
 
-// Count returns the current number of pending verification tasks.
-// Server alignment: Status reporting for heartbeat.
 func (v *verifierRuntime) Count() int {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	return v.count
 }
 
-// Run starts the verifier worker loop with the specified concurrency.
-// Pattern: Context-aware long-running loop (server alignment).
-// Respects context cancellation for graceful shutdown.
-// Spawns 'concurrency' workers that process tasks from the channel.
 func (v *verifierRuntime) Run(ctx context.Context) {
 	v.mu.Lock()
 	concurrency := v.concurrency
 	v.mu.Unlock()
 
-	// Start worker pool
 	for i := 0; i < concurrency; i++ {
 		v.wg.Add(1)
 		go v.worker(ctx)
 	}
 
-	// Wait for context cancellation
 	<-ctx.Done()
-
-	// Close channel to signal workers to stop
 	close(v.taskCh)
-
-	// Wait for all workers to finish
 	v.wg.Wait()
 }
 
-// worker is the per-worker goroutine that processes tasks.
 func (v *verifierRuntime) worker(ctx context.Context) {
 	defer v.wg.Done()
 	for task := range v.taskCh {
@@ -112,7 +80,10 @@ func (v *verifierRuntime) worker(ctx context.Context) {
 		v.count++
 		v.mu.Unlock()
 
-		task.Verify()
+		err := task.Verify()
+		if err != nil && task.Managed {
+			setFileQueuedVerify(task.FileID, false)
+		}
 
 		v.mu.Lock()
 		v.count--
@@ -120,36 +91,33 @@ func (v *verifierRuntime) worker(ctx context.Context) {
 	}
 }
 
-// Verify performs hash verification on the downloaded file.
-// Routes verified results through Reporter.PushVerified.
-// This is the core verification primitive - the Verifier owner
-// orchestrates calling this method, but the logic stays here.
 func (t *Task) Verify() error {
-	var f *os.File
 	f, err := os.Open(t.LocalPath)
 	if err != nil {
 		log.Println("Verify:", t.LocalPath, "open:", err)
 		return err
 	}
-	defer f.Close()
 	fd := t.GetFile()
 	sha, crc, err := computeHashes(f)
 	if err != nil {
+		f.Close()
 		log.Println("Should not happen!")
 		log.Println("Verify:", t.LocalPath, "computeHashes:", err)
 		return err
 	}
-	if strings.ToLower(filepath.Ext(t.LocalPath)) == ".zip" {
+	if strings.ToLower(filepath.Ext(t.FinalPath())) == ".zip" {
 		if t.ShouldSkipZipCheck(sha) {
 			log.Printf("Verify: %s zip check skipped; re-downloaded file has unchanged sha1 %s after previous unzip failure", t.LocalPath, hex.EncodeToString(sha))
 		} else {
 			_, err = f.Seek(0, io.SeekStart)
 			if err != nil {
+				f.Close()
 				log.Println("Verify:", t.LocalPath, "seek:", err)
 				return err
 			}
 			err = testZip(f)
 			if err != nil {
+				f.Close()
 				t.RememberBadZipSHA1(sha)
 				log.Printf("Verify: %s zip: %v (remembering sha1 %s for downloader retry)", t.LocalPath, err, hex.EncodeToString(sha))
 				return err
@@ -157,8 +125,31 @@ func (t *Task) Verify() error {
 		}
 		t.ClearBadZipSHA1()
 	}
+	if err := f.Close(); err != nil {
+		log.Printf("Verify: %s close: %v", t.LocalPath, err)
+		return err
+	}
+	if err := t.prepareReportedPath(); err != nil {
+		log.Printf("Verify: %s prepare reported path: %v", t.LocalPath, err)
+		return err
+	}
 	log.Printf("Verify: #%d %s %s %s", t.FileID, hex.EncodeToString(sha), hex.EncodeToString(crc), fd.Name)
 	Reporter.PushVerified(t, sha, crc)
+	return nil
+}
+
+func (t *Task) prepareReportedPath() error {
+	if !t.Managed || !strings.HasSuffix(t.LocalPath, DownloadingSuffix) {
+		return nil
+	}
+	target := t.DownloadedPath()
+	if samePath(target, t.LocalPath) {
+		return nil
+	}
+	if err := os.Rename(t.LocalPath, target); err != nil {
+		return err
+	}
+	t.LocalPath = target
 	return nil
 }
 

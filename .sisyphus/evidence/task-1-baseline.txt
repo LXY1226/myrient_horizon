@@ -1,8 +1,0 @@
-# myrient-horizon/cmd/worker
-cmd/worker/main.go:38:24: undefined: worker.InitReporter
-cmd/worker/main.go:46:16: undefined: worker.GetReporter
-cmd/worker/main.go:64:21: undefined: worker.InitVerifier
-cmd/worker/main.go:74:20: too many arguments in call to downloader.Run
-	have (context.Context)
-	want ()
-cmd/worker/main.go:93:22: undefined: worker.GetDiskFreeGB

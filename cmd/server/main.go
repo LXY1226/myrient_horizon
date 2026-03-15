@@ -21,6 +21,9 @@ func main() {
 	workerURL := flag.String("worker-url", "", "download URL for the latest worker binary")
 	workerSHA256 := flag.String("worker-sha256", "", "SHA-256 hex digest of the latest worker binary")
 	flag.Parse()
+	if os.Getenv("DB_URI") != "" {
+		*dbURL = os.Getenv("DB_URI")
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -47,7 +50,7 @@ func main() {
 	log.Printf("server: database connected, schema migrated")
 
 	// 3. Hydrate tree from database.
-	if err := serverTree.HydrateFromDB(ctx, server.GetDB()); err != nil {
+	if err := server.Tree.HydrateFromDB(ctx, server.GetDB()); err != nil {
 		log.Fatalf("server: failed to hydrate tree from DB: %v", err)
 	}
 	log.Printf("server: tree hydrated from database")

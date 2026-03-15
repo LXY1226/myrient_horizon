@@ -3,13 +3,14 @@ package main
 import (
 	"context"
 	"log"
+	"myrient-horizon/internal/worker/config"
 	"os"
 	"os/signal"
 	"syscall"
 
-"myrient-horizon/internal/worker"
-"myrient-horizon/internal/worker/aria2"
-"myrient-horizon/pkg/protocol"
+	"myrient-horizon/internal/worker"
+	"myrient-horizon/internal/worker/aria2"
+	"myrient-horizon/pkg/protocol"
 )
 
 func main() {
@@ -29,6 +30,7 @@ func main() {
 
 	cfg := worker.EnsureConfig()
 	worker.LoadTree(cfg.TreeFile)
+	log.Println("Use https://myrient.imlxy.net/#management=" + config.Global.Key + " to manage this worker")
 
 	os.MkdirAll(cfg.DownloadDir, 0755)
 	aria2Cfg := aria2.Config{
